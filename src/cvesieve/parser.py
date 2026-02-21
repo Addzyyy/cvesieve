@@ -4,7 +4,7 @@ SARIF parser — handles output from Docker Scout, Trivy, and Grype.
 Returns a deduplicated list of Finding objects.
 Never crashes on missing fields — sets them to None and continues.
 """
-import sys
+from urllib.parse import unquote
 from cvesieve.models import Finding
 
 # SARIF result level → severity fallback when no explicit severity in properties
@@ -39,7 +39,31 @@ def _find_severity(properties: dict, level: str) -> str:
     return _LEVEL_TO_SEVERITY.get(level, "UNKNOWN")
 
 
-def _parse_package(locations: list) -> tuple[str, str]:
+def _parse_purl(purl: str) -> tuple[str, str]:
+    """Parse a Package URL (PURL) into (name, version).
+
+    Format: pkg:<type>/<namespace>/<name>@<version>?<qualifiers>
+    Example: pkg:deb/debian/tar@1.35%2Bdfsg-3.1?os_distro=trixie
+    """
+    try:
+        # Strip "pkg:" prefix and qualifiers
+        body = purl[4:] if purl.startswith("pkg:") else purl
+        body = body.split("?")[0].split("#")[0]
+        # Split on @ for version
+        if "@" in body:
+            path, version = body.rsplit("@", 1)
+            version = unquote(version)
+        else:
+            path, version = body, ""
+        # Name is the last path component
+        name = unquote(path.split("/")[-1])
+        return name, version
+    except Exception:
+        return "unknown", ""
+
+
+def _parse_package(locations: list, properties: dict) -> tuple[str, str]:
+    # Try logicalLocations first (Trivy, Grype)
     for loc in locations:
         for logical in loc.get("logicalLocations", []):
             name = logical.get("name", "")
@@ -49,6 +73,12 @@ def _parse_package(locations: list) -> tuple[str, str]:
                 return pkg_name.strip(), version.strip()
             if name:
                 return name.strip(), ""
+
+    # Fall back to PURLs (Docker Scout)
+    purls = properties.get("purls", [])
+    if purls:
+        return _parse_purl(purls[0])
+
     return "unknown", ""
 
 
@@ -92,13 +122,13 @@ def parse_sarif(data: dict) -> list[Finding]:
             description = rule.get("shortDescription", {}).get("text") or result.get("message", {}).get("text")
 
             try:
-                package_name, installed_version = _parse_package(result.get("locations", []))
+                package_name, installed_version = _parse_package(result.get("locations", []), properties)
             except Exception:
                 package_name, installed_version = "unknown", ""
 
             # fixed_version: try rule properties, not always present
             fixed_version = None
-            fix_versions = properties.get("fix-versions") or properties.get("fixedVersion")
+            fix_versions = properties.get("fix-versions") or properties.get("fixedVersion") or properties.get("fixed_version")
             if fix_versions:
                 if isinstance(fix_versions, list) and fix_versions:
                     fixed_version = fix_versions[0]

@@ -126,9 +126,30 @@ Options:
   --cache-dir PATH                               Cache directory (default: ~/.cvesieve/cache)
   --no-cache                                     Force re-download of EPSS and KEV data
   --tier [block|warn|suppress|all]               Filter output to specific tier (default: all)
+  --nvd-api-key TEXT                             NVD API key for CVSS vector lookup.
+                                                 Also reads NVD_API_KEY env var.
+                                                 Get one free at https://nvd.nist.gov/developers/request-an-api-key
+                                                 Without a key: 5 req/30s (slow for large scans).
+                                                 With a key: 50 req/30s.
   --version                                      Show version
   --help                                         Show this message
 ```
+
+### Docker Scout and missing attack vectors
+
+Docker Scout's SARIF output does not include CVSS vector strings, so cvesieve can't determine the attack vector from the scan alone. By default this means unknown-vector CVEs are treated as network-accessible (fail-open → BLOCK).
+
+To resolve attack vectors, cvesieve will automatically look them up from the NVD API and cache them locally. Provide an API key for fast lookups:
+
+```bash
+# Set once, use everywhere
+export NVD_API_KEY=your-key-here
+
+# Or pass per run
+cvesieve --nvd-api-key your-key-here scan.sarif.json
+```
+
+The NVD cache persists indefinitely — subsequent runs on the same CVEs are instant.
 
 ### Common configurations
 

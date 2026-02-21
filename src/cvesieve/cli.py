@@ -19,6 +19,7 @@ from cvesieve.engine import classify
 from cvesieve.enrichment.cvss import extract_attack_vector
 from cvesieve.enrichment.epss import load_epss, lookup_epss
 from cvesieve.enrichment.kev import is_in_kev, load_kev
+from cvesieve.enrichment.nvd import fetch_missing_vectors
 from cvesieve.models import ClassifiedFinding, EnrichedFinding, Tier
 from cvesieve.output import format_json, format_summary, format_table
 from cvesieve.parser import parse_sarif
@@ -64,6 +65,7 @@ def _days_since(date_str: str | None) -> int | None:
 @click.option("--no-cache", is_flag=True, default=False, help="Force re-download of EPSS and KEV data")
 @click.option("--tier", type=click.Choice(["block", "warn", "suppress", "all"]), default="all", show_default=True)
 @click.option("--min-severity", type=click.Choice(["low", "medium", "high", "critical"], case_sensitive=False), default="low", show_default=True, help="Ignore findings below this severity (BLOCK findings are always shown regardless)")
+@click.option("--nvd-api-key", envvar="NVD_API_KEY", default=None, help="NVD API key for CVSS vector lookup (or set NVD_API_KEY env var). Get one free at https://nvd.nist.gov/developers/request-an-api-key")
 @click.version_option(version=__version__, prog_name="cvesieve")
 def main(
     input_file: Path | None,
@@ -75,6 +77,7 @@ def main(
     no_cache: bool,
     tier: str,
     min_severity: str,
+    nvd_api_key: str | None,
 ) -> None:
     """Filter CVE scanner noise using real-world exploitability signals.
 
@@ -115,11 +118,18 @@ def main(
     epss_scores = load_epss(cache_dir, no_cache=no_cache)
     kev_set = load_kev(cache_dir, no_cache=no_cache)
 
+    # 3b. NVD CVSS vector lookup for findings missing attack vector
+    missing_vector_ids = [f.cve_id for f in findings if not f.cvss_vector]
+    nvd_vectors: dict[str, str | None] = {}
+    if missing_vector_ids:
+        nvd_vectors = fetch_missing_vectors(missing_vector_ids, cache_dir, api_key=nvd_api_key)
+
     # 4. Enrich findings
     enriched = []
     for f in findings:
         epss_score, epss_pct = lookup_epss(epss_scores, f.cve_id)
-        attack_vector = extract_attack_vector(f.cvss_vector)
+        cvss_vector = f.cvss_vector or nvd_vectors.get(f.cve_id)
+        attack_vector = extract_attack_vector(cvss_vector)
         in_kev = is_in_kev(kev_set, f.cve_id)
         days = _days_since(f.published_date)
 
