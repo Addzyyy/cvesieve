@@ -65,23 +65,35 @@ def _save_cache(cache_dir: Path, cache: dict[str, NvdData]) -> None:
     _cache_path(cache_dir).write_text(json.dumps(serialisable))
 
 
-def _fetch_nvd_data(cve_id: str, api_key: str | None) -> NvdData:
+def _fetch_nvd_data(cve_id: str, api_key: str | None) -> NvdData | None:
+    """
+    Fetch NVD data for a single CVE.
+    Returns NvdData on success (fields may be None if NVD has no data).
+    Returns None on network/HTTP failure — caller should not cache this.
+    """
     headers = {}
     if api_key:
         headers["apiKey"] = api_key
 
-    try:
-        response = requests.get(
-            NVD_API_URL,
-            params={"cveId": cve_id},
-            headers=headers,
-            timeout=15,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except Exception as e:
-        print(f"Warning: NVD lookup failed for {cve_id}: {e}", file=sys.stderr)
-        return NvdData(vector=None, published=None)
+    last_exc = None
+    for attempt in range(3):
+        try:
+            response = requests.get(
+                NVD_API_URL,
+                params={"cveId": cve_id},
+                headers=headers,
+                timeout=20,
+            )
+            response.raise_for_status()
+            data = response.json()
+            break
+        except Exception as e:
+            last_exc = e
+            if attempt < 2:
+                time.sleep(2)
+    else:
+        print(f"Warning: NVD lookup failed for {cve_id}: {last_exc}", file=sys.stderr)
+        return None  # do not cache transient failures
 
     vulns = data.get("vulnerabilities", [])
     if not vulns:
@@ -145,7 +157,10 @@ def fetch_missing_data(
     for i, cve_id in enumerate(missing):
         if i > 0:
             time.sleep(delay)
-        cache[cve_id] = _fetch_nvd_data(cve_id, api_key)
+        result = _fetch_nvd_data(cve_id, api_key)
+        if result is not None:
+            cache[cve_id] = result
+        # None = transient network failure — skip caching so next run retries
 
     _save_cache(cache_dir, cache)
 

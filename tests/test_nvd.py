@@ -166,8 +166,14 @@ class TestNvdLookup:
             with patch("cvesieve.enrichment.nvd.time.sleep"):
                 result = fetch_missing_data(["CVE-2024-1234"], tmp_path)
 
+        # Result is still returned as NvdData(None, None) for the caller
         assert result["CVE-2024-1234"].vector is None
         assert result["CVE-2024-1234"].published is None
+        # But it must NOT be cached — so next run will retry
+        cache_file = tmp_path / "nvd_cvss.json"
+        if cache_file.exists():
+            cache = json.loads(cache_file.read_text())
+            assert "CVE-2024-1234" not in cache
 
     def test_prefers_v31_over_v2(self, tmp_path):
         mock_response = MagicMock()
