@@ -19,7 +19,7 @@ from cvesieve.engine import classify
 from cvesieve.enrichment.cvss import extract_attack_vector
 from cvesieve.enrichment.epss import load_epss, lookup_epss
 from cvesieve.enrichment.kev import is_in_kev, load_kev
-from cvesieve.enrichment.nvd import fetch_missing_vectors
+from cvesieve.enrichment.nvd import fetch_missing_data
 from cvesieve.models import ClassifiedFinding, EnrichedFinding, Tier
 from cvesieve.output import format_json, format_summary, format_table
 from cvesieve.parser import parse_sarif
@@ -118,20 +118,22 @@ def main(
     epss_scores = load_epss(cache_dir, no_cache=no_cache)
     kev_set = load_kev(cache_dir, no_cache=no_cache)
 
-    # 3b. NVD CVSS vector lookup for findings missing attack vector
-    missing_vector_ids = [f.cve_id for f in findings if not f.cvss_vector]
-    nvd_vectors: dict[str, str | None] = {}
-    if missing_vector_ids:
-        nvd_vectors = fetch_missing_vectors(missing_vector_ids, cache_dir, api_key=nvd_api_key)
+    # 3b. NVD lookup for findings missing vector or published date
+    missing_nvd_ids = [f.cve_id for f in findings if not f.cvss_vector or not f.published_date]
+    nvd_data = {}
+    if missing_nvd_ids:
+        nvd_data = fetch_missing_data(missing_nvd_ids, cache_dir, api_key=nvd_api_key)
 
     # 4. Enrich findings
     enriched = []
     for f in findings:
         epss_score, epss_pct = lookup_epss(epss_scores, f.cve_id)
-        cvss_vector = f.cvss_vector or nvd_vectors.get(f.cve_id)
+        nvd = nvd_data.get(f.cve_id)
+        cvss_vector = f.cvss_vector or (nvd.vector if nvd else None)
         attack_vector = extract_attack_vector(cvss_vector)
         in_kev = is_in_kev(kev_set, f.cve_id)
-        days = _days_since(f.published_date)
+        published = f.published_date or (nvd.published if nvd else None)
+        days = _days_since(published)
 
         enriched.append(EnrichedFinding(
             finding=f,

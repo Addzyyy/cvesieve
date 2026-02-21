@@ -14,6 +14,7 @@ from cvesieve.cli import main
 from cvesieve.enrichment.cvss import extract_attack_vector
 from cvesieve.enrichment.epss import load_epss, lookup_epss
 from cvesieve.enrichment.kev import is_in_kev, load_kev
+from cvesieve.enrichment.nvd import NvdData
 from cvesieve.engine import classify
 from cvesieve.models import EnrichedFinding, Finding, Tier
 from cvesieve.parser import parse_sarif
@@ -136,16 +137,22 @@ def _fake_load_kev(cache_dir, no_cache=False):
     return {"CVE-2024-1234"}
 
 
+def _fake_fetch_missing_data(cve_ids, cache_dir, api_key=None):
+    """Return empty NvdData for all CVEs — no network call."""
+    return {cve_id: NvdData(vector=None, published=None) for cve_id in cve_ids}
+
+
 class TestOutputFormats:
     def _run_cli(self, sarif_file: str, tmp_path: Path, extra_args: list = None):
         runner = CliRunner()
         with patch("cvesieve.cli.load_epss", side_effect=_fake_load_epss):
             with patch("cvesieve.cli.load_kev", side_effect=_fake_load_kev):
-                result = runner.invoke(
-                    main,
-                    [str(FIXTURES / sarif_file), f"--cache-dir={tmp_path}", "--no-cache"] + (extra_args or []),
-                    catch_exceptions=False,
-                )
+                with patch("cvesieve.cli.fetch_missing_data", side_effect=_fake_fetch_missing_data):
+                    result = runner.invoke(
+                        main,
+                        [str(FIXTURES / sarif_file), f"--cache-dir={tmp_path}", "--no-cache"] + (extra_args or []),
+                        catch_exceptions=False,
+                    )
         return result
 
     def test_table_format_contains_block_section(self, tmp_path):
@@ -194,11 +201,12 @@ class TestMinSeverityFilter:
         runner = CliRunner()
         with patch("cvesieve.cli.load_epss", side_effect=_fake_load_epss):
             with patch("cvesieve.cli.load_kev", side_effect=_fake_load_kev):
-                result = runner.invoke(
-                    main,
-                    [str(FIXTURES / sarif_file), f"--cache-dir={tmp_path}", "--no-cache"] + (extra_args or []),
-                    catch_exceptions=False,
-                )
+                with patch("cvesieve.cli.fetch_missing_data", side_effect=_fake_fetch_missing_data):
+                    result = runner.invoke(
+                        main,
+                        [str(FIXTURES / sarif_file), f"--cache-dir={tmp_path}", "--no-cache"] + (extra_args or []),
+                        catch_exceptions=False,
+                    )
         return result
 
     def test_min_severity_high_filters_medium_and_low(self, tmp_path):

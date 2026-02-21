@@ -1,12 +1,13 @@
-"""Tests for NVD CVSS vector lookup and PURL parsing."""
+"""Tests for NVD CVSS vector/published date lookup and PURL parsing."""
 import json
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cvesieve.enrichment.nvd import fetch_missing_vectors
+from cvesieve.enrichment.nvd import NvdData, fetch_missing_data
 from cvesieve.parser import _parse_purl, parse_sarif
+
 
 # ── PURL parsing ──────────────────────────────────────────────────────────────
 
@@ -31,13 +32,10 @@ class TestParsePurl:
 
     def test_invalid_purl(self):
         name, version = _parse_purl("not-a-purl")
-        # Should not crash — returns something reasonable
         assert isinstance(name, str)
 
 
 class TestDockerScoutSarifParsing:
-    """Test that the parser correctly handles real Docker Scout SARIF structure."""
-
     def _make_docker_scout_sarif(self, cve_id="CVE-2024-1234", severity="LOW", purl="pkg:deb/debian/tar@1.35%2Bdfsg-3.1"):
         return {
             "version": "2.1.0",
@@ -78,7 +76,6 @@ class TestDockerScoutSarifParsing:
         assert findings[0].installed_version == "1.35+dfsg-3.1"
 
     def test_no_cvss_vector_is_none(self):
-        """Docker Scout doesn't include CVSS vector — should be None, not crash."""
         data = self._make_docker_scout_sarif()
         findings = parse_sarif(data)
         assert findings[0].cvss_vector is None
@@ -96,16 +93,15 @@ class TestDockerScoutSarifParsing:
 
 # ── NVD lookup ────────────────────────────────────────────────────────────────
 
-def _make_nvd_response(cve_id: str, vector: str) -> dict:
+def _make_nvd_response(cve_id: str, vector: str, published: str = "2024-01-15T10:15:00.000") -> dict:
     return {
         "vulnerabilities": [{
             "cve": {
                 "id": cve_id,
+                "published": published,
                 "metrics": {
                     "cvssMetricV31": [{
-                        "cvssData": {
-                            "vectorString": vector
-                        }
+                        "cvssData": {"vectorString": vector}
                     }]
                 }
             }
@@ -114,28 +110,42 @@ def _make_nvd_response(cve_id: str, vector: str) -> dict:
 
 
 class TestNvdLookup:
-    def test_fetches_vector_for_missing_cve(self, tmp_path):
+    def test_fetches_vector_and_published_date(self, tmp_path):
         vector = "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"
+        published = "2024-01-15T10:15:00.000"
         mock_response = MagicMock()
-        mock_response.json.return_value = _make_nvd_response("CVE-2024-1234", vector)
+        mock_response.json.return_value = _make_nvd_response("CVE-2024-1234", vector, published)
         mock_response.raise_for_status = MagicMock()
 
         with patch("cvesieve.enrichment.nvd.requests.get", return_value=mock_response):
             with patch("cvesieve.enrichment.nvd.time.sleep"):
-                result = fetch_missing_vectors(["CVE-2024-1234"], tmp_path)
+                result = fetch_missing_data(["CVE-2024-1234"], tmp_path)
 
-        assert result["CVE-2024-1234"] == vector
+        assert result["CVE-2024-1234"].vector == vector
+        assert result["CVE-2024-1234"].published == published
 
     def test_uses_cache_on_second_call(self, tmp_path):
         vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
-        cache = {"CVE-2024-1234": vector}
+        cache = {"CVE-2024-1234": {"vector": vector, "published": "2024-01-15T10:15:00.000"}}
         (tmp_path / "nvd_cvss.json").write_text(json.dumps(cache))
 
         with patch("cvesieve.enrichment.nvd.requests.get") as mock_get:
-            result = fetch_missing_vectors(["CVE-2024-1234"], tmp_path)
+            result = fetch_missing_data(["CVE-2024-1234"], tmp_path)
             mock_get.assert_not_called()
 
-        assert result["CVE-2024-1234"] == vector
+        assert result["CVE-2024-1234"].vector == vector
+
+    def test_migrates_old_cache_format(self, tmp_path):
+        """Old cache stored just a vector string — should migrate gracefully."""
+        old_cache = {"CVE-2024-1234": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}
+        (tmp_path / "nvd_cvss.json").write_text(json.dumps(old_cache))
+
+        with patch("cvesieve.enrichment.nvd.requests.get") as mock_get:
+            result = fetch_missing_data(["CVE-2024-1234"], tmp_path)
+            mock_get.assert_not_called()
+
+        assert result["CVE-2024-1234"].vector == old_cache["CVE-2024-1234"]
+        assert result["CVE-2024-1234"].published is None
 
     def test_caches_none_for_unknown_cve(self, tmp_path):
         mock_response = MagicMock()
@@ -144,26 +154,28 @@ class TestNvdLookup:
 
         with patch("cvesieve.enrichment.nvd.requests.get", return_value=mock_response):
             with patch("cvesieve.enrichment.nvd.time.sleep"):
-                result = fetch_missing_vectors(["CVE-9999-9999"], tmp_path)
+                result = fetch_missing_data(["CVE-9999-9999"], tmp_path)
 
-        assert result["CVE-9999-9999"] is None
-        # Should be cached so we don't re-fetch
+        assert result["CVE-9999-9999"].vector is None
+        assert result["CVE-9999-9999"].published is None
         cache = json.loads((tmp_path / "nvd_cvss.json").read_text())
         assert "CVE-9999-9999" in cache
 
     def test_returns_none_on_network_failure(self, tmp_path):
         with patch("cvesieve.enrichment.nvd.requests.get", side_effect=Exception("network error")):
             with patch("cvesieve.enrichment.nvd.time.sleep"):
-                result = fetch_missing_vectors(["CVE-2024-1234"], tmp_path)
+                result = fetch_missing_data(["CVE-2024-1234"], tmp_path)
 
-        assert result["CVE-2024-1234"] is None
+        assert result["CVE-2024-1234"].vector is None
+        assert result["CVE-2024-1234"].published is None
 
-    def test_prefers_v31_over_v30_over_v2(self, tmp_path):
+    def test_prefers_v31_over_v2(self, tmp_path):
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "vulnerabilities": [{
                 "cve": {
                     "id": "CVE-2024-1234",
+                    "published": "2024-01-15T10:15:00.000",
                     "metrics": {
                         "cvssMetricV31": [{"cvssData": {"vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}}],
                         "cvssMetricV2": [{"cvssData": {"vectorString": "AV:N/AC:L/Au:N/C:P/I:P/A:P"}}],
@@ -175,9 +187,9 @@ class TestNvdLookup:
 
         with patch("cvesieve.enrichment.nvd.requests.get", return_value=mock_response):
             with patch("cvesieve.enrichment.nvd.time.sleep"):
-                result = fetch_missing_vectors(["CVE-2024-1234"], tmp_path)
+                result = fetch_missing_data(["CVE-2024-1234"], tmp_path)
 
-        assert result["CVE-2024-1234"].startswith("CVSS:3.1")
+        assert result["CVE-2024-1234"].vector.startswith("CVSS:3.1")
 
     def test_uses_api_key_in_header(self, tmp_path):
         mock_response = MagicMock()
@@ -186,7 +198,7 @@ class TestNvdLookup:
 
         with patch("cvesieve.enrichment.nvd.requests.get", return_value=mock_response) as mock_get:
             with patch("cvesieve.enrichment.nvd.time.sleep"):
-                fetch_missing_vectors(["CVE-2024-1234"], tmp_path, api_key="test-key-123")
+                fetch_missing_data(["CVE-2024-1234"], tmp_path, api_key="test-key-123")
 
         call_kwargs = mock_get.call_args
         assert call_kwargs.kwargs["headers"]["apiKey"] == "test-key-123"
