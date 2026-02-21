@@ -24,3 +24,7 @@ build/
 
 # cvesieve runtime cache
 ~/.cvesieve/
+
+# Scan output files
+*.sarif.json
+*.sarif
