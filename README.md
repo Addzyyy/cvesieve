@@ -52,6 +52,21 @@ Every organisation has a different risk tolerance. cvesieve's defaults are conse
 | Extend the new-CVE window | `--age-threshold 30` | Hold new CVEs at BLOCK for longer |
 | Speed up large scans | `--min-nvd-severity high` | Skip NVD lookups for LOW/MEDIUM CVEs |
 
+### Choosing an EPSS threshold
+
+The default threshold is **0.1% (0.001)** — deliberately strict. A CVE only needs a 1-in-1,000 exploitation probability to be flagged. This is a conservative starting point that keeps the pipeline safe while you build confidence in the tool.
+
+For most teams **1% (0.01)** is a more practical threshold:
+
+| EPSS | What it usually means |
+|------|----------------------|
+| < 0.1% | Theoretical CVE — nobody is actively exploiting it |
+| 0.1–1% | Low activity — worth watching but rarely urgent |
+| 1–10% | Elevated — PoC likely exists or exploitation is starting |
+| > 10% | Active exploitation underway — patch immediately |
+
+The real noise reduction in cvesieve comes from **attack vector and age**, not the EPSS threshold alone — most CVEs are suppressed because they're LOCAL vector and old, not because their EPSS is below 0.1%. Raising the threshold to 1% reduces additional noise without meaningfully increasing risk for most environments.
+
 **Conservative (high-security environment):**
 ```bash
 cvesieve --epss-threshold 0.0001 --age-threshold 30 scan.sarif.json
