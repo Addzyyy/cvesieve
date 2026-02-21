@@ -44,6 +44,32 @@ def _apply_severity_filter(
     ]
 
 
+def _apply_block_severity_cap(
+    classified: list[ClassifiedFinding], min_block_severity: str
+) -> list[ClassifiedFinding]:
+    """
+    Cap findings below min_block_severity at WARN — they can never be BLOCK
+    unless they're in KEV (KEV always wins).
+    """
+    threshold = _severity_rank(min_block_severity)
+    result = []
+    for cf in classified:
+        if (
+            cf.tier == Tier.BLOCK
+            and not cf.enriched.in_kev
+            and _severity_rank(cf.enriched.finding.severity) < threshold
+        ):
+            from cvesieve.models import ClassifiedFinding as CF
+            result.append(CF(
+                enriched=cf.enriched,
+                tier=Tier.WARN,
+                reason=cf.reason + f" [capped at WARN — severity below {min_block_severity.upper()}]",
+            ))
+        else:
+            result.append(cf)
+    return result
+
+
 def _days_since(date_str: str | None) -> int | None:
     if not date_str:
         return None
@@ -65,6 +91,7 @@ def _days_since(date_str: str | None) -> int | None:
 @click.option("--no-cache", is_flag=True, default=False, help="Force re-download of EPSS and KEV data")
 @click.option("--tier", type=click.Choice(["block", "warn", "suppress", "all"]), default="all", show_default=True)
 @click.option("--min-severity", type=click.Choice(["low", "medium", "high", "critical"], case_sensitive=False), default="low", show_default=True, help="Ignore findings below this severity (BLOCK findings are always shown regardless)")
+@click.option("--min-block-severity", type=click.Choice(["low", "medium", "high", "critical"], case_sensitive=False), default="low", show_default=True, help="Cap findings below this severity at WARN — they cannot be BLOCK unless in KEV")
 @click.option("--nvd-api-key", envvar="NVD_API_KEY", default=None, help="NVD API key for CVSS vector lookup (or set NVD_API_KEY env var). Get one free at https://nvd.nist.gov/developers/request-an-api-key")
 @click.version_option(version=__version__, prog_name="cvesieve")
 def main(
@@ -77,6 +104,7 @@ def main(
     no_cache: bool,
     tier: str,
     min_severity: str,
+    min_block_severity: str,
     nvd_api_key: str | None,
 ) -> None:
     """Filter CVE scanner noise using real-world exploitability signals.
@@ -147,7 +175,11 @@ def main(
     # 5. Classify
     classified = [classify(ef, epss_threshold=epss_threshold, age_threshold=age_threshold) for ef in enriched]
 
-    # 5b. Apply severity filter (BLOCK findings always pass through regardless)
+    # 5b. Cap low-severity findings at WARN (KEV always overrides)
+    if min_block_severity.lower() != "low":
+        classified = _apply_block_severity_cap(classified, min_block_severity)
+
+    # 5c. Apply severity filter (BLOCK findings always pass through regardless)
     if min_severity.lower() != "low":
         before = len(classified)
         classified = _apply_severity_filter(classified, min_severity)
