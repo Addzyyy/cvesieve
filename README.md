@@ -115,15 +115,35 @@ Summary: 47 total → 8 block, 15 warn, 24 suppress (83.0% noise reduction)
 
 ```
 Options:
-  -f, --format [table|json|summary]   Output format (default: table)
-  -o, --output FILE                   Write output to file
-  --epss-threshold FLOAT              EPSS threshold (default: 0.001)
-  --age-threshold INT                 Minimum days since publication for downgrade (default: 14)
-  --cache-dir PATH                    Cache directory (default: ~/.cvesieve/cache)
-  --no-cache                          Force re-download of EPSS and KEV data
-  --tier [block|warn|suppress|all]    Filter output to specific tier (default: all)
-  --version                           Show version
-  --help                              Show this message
+  -f, --format [table|json|summary]              Output format (default: table)
+  -o, --output FILE                              Write output to file
+  --epss-threshold FLOAT                         EPSS score threshold 0.0-1.0 (default: 0.001)
+                                                 Findings below this are considered low-probability.
+                                                 Raise to reduce noise, lower to be more conservative.
+  --age-threshold INT                            Minimum days since publication for downgrade (default: 14)
+  --min-severity [low|medium|high|critical]      Ignore findings below this severity (default: low)
+                                                 BLOCK findings are always shown — KEV always wins.
+  --cache-dir PATH                               Cache directory (default: ~/.cvesieve/cache)
+  --no-cache                                     Force re-download of EPSS and KEV data
+  --tier [block|warn|suppress|all]               Filter output to specific tier (default: all)
+  --version                                      Show version
+  --help                                         Show this message
+```
+
+### Common configurations
+
+```bash
+# Only care about HIGH and CRITICAL findings
+cvesieve --min-severity high scan.sarif.json
+
+# More aggressive noise reduction — raise EPSS threshold to 1%
+cvesieve --epss-threshold 0.01 scan.sarif.json
+
+# Both together
+cvesieve --min-severity high --epss-threshold 0.01 scan.sarif.json
+
+# Strict mode — lower EPSS threshold, flag newer CVEs for longer
+cvesieve --epss-threshold 0.0001 --age-threshold 30 scan.sarif.json
 ```
 
 ---

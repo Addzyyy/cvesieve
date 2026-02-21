@@ -86,12 +86,25 @@ Summary: 47 total → 8 block, 15 warn, 24 suppress (83% noise reduction)
 
 ---
 
+## Configuration
+
+All thresholds are configurable via CLI flags. Defaults are chosen conservatively (fail open).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--epss-threshold` | `0.001` (0.1%) | EPSS score below which a CVE is considered low-probability. Raise to reduce noise, lower to be more conservative. |
+| `--age-threshold` | `14` (days) | Minimum age before a low-EPSS CVE can be downgraded. Younger CVEs are not trusted to have stable EPSS scores. |
+| `--min-severity` | `low` | Ignore findings below this severity level (`low`, `medium`, `high`, `critical`). **BLOCK findings are always shown regardless of severity — KEV always wins.** |
+
+---
+
 ## Scope
 
 **This version does:**
 - Accept SARIF from Docker Scout, Trivy, and Grype
 - Enrich with EPSS, attack vector, and CISA KEV
 - Classify into BLOCK / WARN / SUPPRESS with reasons
+- Filter by minimum severity (BLOCK findings always shown)
 - Output as table, JSON, or one-line summary
 - Work as a CI pipeline gate (exit 1 on BLOCK findings)
 

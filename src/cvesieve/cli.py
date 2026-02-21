@@ -19,11 +19,28 @@ from cvesieve.engine import classify
 from cvesieve.enrichment.cvss import extract_attack_vector
 from cvesieve.enrichment.epss import load_epss, lookup_epss
 from cvesieve.enrichment.kev import is_in_kev, load_kev
-from cvesieve.models import EnrichedFinding, Tier
+from cvesieve.models import ClassifiedFinding, EnrichedFinding, Tier
 from cvesieve.output import format_json, format_summary, format_table
 from cvesieve.parser import parse_sarif
 
 DEFAULT_CACHE_DIR = Path.home() / ".cvesieve" / "cache"
+
+SEVERITY_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+
+
+def _severity_rank(severity: str) -> int:
+    return SEVERITY_ORDER.get(severity.upper(), 0)
+
+
+def _apply_severity_filter(
+    classified: list[ClassifiedFinding], min_severity: str
+) -> list[ClassifiedFinding]:
+    """Remove findings below min_severity — but never remove BLOCK findings (KEV always wins)."""
+    threshold = _severity_rank(min_severity)
+    return [
+        cf for cf in classified
+        if cf.tier == Tier.BLOCK or _severity_rank(cf.enriched.finding.severity) >= threshold
+    ]
 
 
 def _days_since(date_str: str | None) -> int | None:
@@ -46,6 +63,7 @@ def _days_since(date_str: str | None) -> int | None:
 @click.option("--cache-dir", type=click.Path(path_type=Path), default=DEFAULT_CACHE_DIR, show_default=True)
 @click.option("--no-cache", is_flag=True, default=False, help="Force re-download of EPSS and KEV data")
 @click.option("--tier", type=click.Choice(["block", "warn", "suppress", "all"]), default="all", show_default=True)
+@click.option("--min-severity", type=click.Choice(["low", "medium", "high", "critical"], case_sensitive=False), default="low", show_default=True, help="Ignore findings below this severity (BLOCK findings are always shown regardless)")
 @click.version_option(version=__version__, prog_name="cvesieve")
 def main(
     input_file: Path | None,
@@ -56,6 +74,7 @@ def main(
     cache_dir: Path,
     no_cache: bool,
     tier: str,
+    min_severity: str,
 ) -> None:
     """Filter CVE scanner noise using real-world exploitability signals.
 
@@ -115,6 +134,14 @@ def main(
 
     # 5. Classify
     classified = [classify(ef, epss_threshold=epss_threshold, age_threshold=age_threshold) for ef in enriched]
+
+    # 5b. Apply severity filter (BLOCK findings always pass through regardless)
+    if min_severity.lower() != "low":
+        before = len(classified)
+        classified = _apply_severity_filter(classified, min_severity)
+        filtered = before - len(classified)
+        if filtered:
+            click.echo(f"Filtered {filtered} finding(s) below {min_severity.upper()} severity.", err=True)
 
     # 6. Format output
     if output_format == "table":

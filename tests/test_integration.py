@@ -181,3 +181,47 @@ class TestOutputFormats:
         result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "json"])
         data = json.loads(result.output)
         assert data["summary"]["noise_reduction_pct"] >= 0
+
+
+def _parse_json_output(output: str) -> dict:
+    """Extract JSON from output that may have leading stderr lines mixed in."""
+    idx = output.find("{")
+    return json.loads(output[idx:])
+
+
+class TestMinSeverityFilter:
+    def _run_cli(self, sarif_file: str, tmp_path: Path, extra_args: list = None):
+        runner = CliRunner()
+        with patch("cvesieve.cli.load_epss", side_effect=_fake_load_epss):
+            with patch("cvesieve.cli.load_kev", side_effect=_fake_load_kev):
+                result = runner.invoke(
+                    main,
+                    [str(FIXTURES / sarif_file), f"--cache-dir={tmp_path}", "--no-cache"] + (extra_args or []),
+                    catch_exceptions=False,
+                )
+        return result
+
+    def test_min_severity_high_filters_medium_and_low(self, tmp_path):
+        """--min-severity high should remove MEDIUM and LOW findings from output."""
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--min-severity", "high", "--format", "json"])
+        data = _parse_json_output(result.output)
+        all_findings = data["block"] + data["warn"] + data["suppress"]
+        severities = {f["severity"] for f in all_findings}
+        assert "LOW" not in severities
+        assert "MEDIUM" not in severities
+
+    def test_block_findings_always_shown_regardless_of_severity(self, tmp_path):
+        """BLOCK findings must never be filtered — KEV always wins."""
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--min-severity", "critical", "--format", "json"])
+        data = _parse_json_output(result.output)
+        # CVE-2024-1234 is in KEV → BLOCK → must always appear even with --min-severity critical
+        block_ids = {f["cve_id"] for f in data["block"]}
+        assert "CVE-2024-1234" in block_ids
+
+    def test_min_severity_low_shows_everything(self, tmp_path):
+        """--min-severity low (default) should not filter anything."""
+        result_default = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "json"])
+        result_low = self._run_cli("docker_scout.sarif.json", tmp_path, ["--min-severity", "low", "--format", "json"])
+        data_default = json.loads(result_default.output)
+        data_low = json.loads(result_low.output)
+        assert data_default["summary"]["total"] == data_low["summary"]["total"]

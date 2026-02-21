@@ -105,6 +105,12 @@ cat scan.sarif.json | cvesieve
 cvesieve --format json scan.sarif.json
 cvesieve --format summary scan.sarif.json
 
+# Filter by severity (BLOCK findings always shown regardless)
+cvesieve --min-severity high scan.sarif.json
+
+# Adjust EPSS threshold (default 0.001 = 0.1%)
+cvesieve --epss-threshold 0.01 scan.sarif.json
+
 # Force cache refresh
 cvesieve --no-cache scan.sarif.json
 ```
