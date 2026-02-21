@@ -1,0 +1,2 @@
+[console_scripts]
+cvesieve = cvesieve.cli:main

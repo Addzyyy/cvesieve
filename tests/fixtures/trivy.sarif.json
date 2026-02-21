@@ -1,0 +1,69 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Trivy",
+          "version": "0.50.0",
+          "rules": [
+            {
+              "id": "CVE-2024-2222",
+              "shortDescription": { "text": "curl heap buffer overflow" },
+              "helpUri": "https://avd.aquasec.com/nvd/CVE-2024-2222",
+              "properties": {
+                "security-severity": "8.1",
+                "cvssV3_vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                "published": "2024-02-15T00:00:00Z"
+              }
+            },
+            {
+              "id": "CVE-2024-3333",
+              "shortDescription": { "text": "zlib integer overflow" },
+              "helpUri": "https://avd.aquasec.com/nvd/CVE-2024-3333",
+              "properties": {
+                "security-severity": "5.5",
+                "cvssV3_vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H"
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CVE-2024-2222",
+          "level": "error",
+          "message": { "text": "curl 7.88.1: CVE-2024-2222" },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "name": "curl",
+                  "kind": "module",
+                  "fullyQualifiedName": "curl@7.88.1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-3333",
+          "level": "warning",
+          "message": { "text": "zlib 1.2.11: CVE-2024-3333" },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "name": "zlib",
+                  "kind": "module",
+                  "fullyQualifiedName": "zlib@1.2.11"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

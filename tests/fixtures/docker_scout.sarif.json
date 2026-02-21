@@ -1,0 +1,99 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "docker scout",
+          "version": "1.0.0",
+          "rules": [
+            {
+              "id": "CVE-2024-1234",
+              "shortDescription": { "text": "OpenSSL buffer overflow" },
+              "helpUri": "https://nvd.nist.gov/vuln/detail/CVE-2024-1234",
+              "properties": {
+                "cvssV3_severity": "CRITICAL",
+                "cvssV3_score": 9.8,
+                "cvssV3_vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                "published": "2024-01-01T00:00:00Z",
+                "tags": ["CVE-2024-1234", "vulnerability"]
+              }
+            },
+            {
+              "id": "CVE-2024-5678",
+              "shortDescription": { "text": "sudo local privilege escalation" },
+              "helpUri": "https://nvd.nist.gov/vuln/detail/CVE-2024-5678",
+              "properties": {
+                "cvssV3_severity": "HIGH",
+                "cvssV3_score": 7.8,
+                "cvssV3_vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+                "published": "2024-01-01T00:00:00Z"
+              }
+            },
+            {
+              "id": "CVE-2024-9999",
+              "shortDescription": { "text": "glibc memory corruption" },
+              "helpUri": "https://nvd.nist.gov/vuln/detail/CVE-2024-9999",
+              "properties": {
+                "cvssV3_severity": "MEDIUM",
+                "cvssV3_score": 5.5,
+                "cvssV3_vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H"
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CVE-2024-1234",
+          "level": "error",
+          "message": { "text": "openssl 1.1.1k is affected by CVE-2024-1234" },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "name": "openssl",
+                  "kind": "module",
+                  "fullyQualifiedName": "openssl@1.1.1k"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-5678",
+          "level": "error",
+          "message": { "text": "sudo 1.9.5 is affected by CVE-2024-5678" },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "name": "sudo",
+                  "kind": "module",
+                  "fullyQualifiedName": "sudo@1.9.5"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-9999",
+          "level": "warning",
+          "message": { "text": "glibc 2.31 is affected by CVE-2024-9999" },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "name": "glibc",
+                  "kind": "module",
+                  "fullyQualifiedName": "glibc@2.31"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
