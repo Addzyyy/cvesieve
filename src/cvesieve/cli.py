@@ -95,6 +95,7 @@ def _days_since(date_str: str | None) -> int | None:
 @click.option("--min-severity", type=click.Choice(["low", "medium", "high", "critical"], case_sensitive=False), default="low", show_default=True, help="Ignore findings below this severity (BLOCK findings are always shown regardless)")
 @click.option("--min-block-severity", type=click.Choice(["low", "medium", "high", "critical"], case_sensitive=False), default="low", show_default=True, help="Cap findings below this severity at WARN — they cannot be BLOCK unless in KEV")
 @click.option("--nvd-api-key", envvar="NVD_API_KEY", default=None, help="NVD API key for CVSS vector lookup (or set NVD_API_KEY env var). Get one free at https://nvd.nist.gov/developers/request-an-api-key")
+@click.option("--min-nvd-severity", type=click.Choice(["low", "medium", "high", "critical"], case_sensitive=False), default="low", show_default=True, help="Skip NVD lookups for CVEs below this severity (faster but fail-open for skipped CVEs)")
 @click.version_option(version=__version__, prog_name="cvesieve")
 def main(
     input_file: Path | None,
@@ -108,6 +109,7 @@ def main(
     min_severity: str,
     min_block_severity: str,
     nvd_api_key: str | None,
+    min_nvd_severity: str,
 ) -> None:
     """Filter CVE scanner noise using real-world exploitability signals.
 
@@ -149,7 +151,20 @@ def main(
     kev_set = load_kev(cache_dir, no_cache=no_cache)
 
     # 3b. NVD lookup for findings missing vector or published date
-    missing_nvd_ids = [f.cve_id for f in findings if not f.cvss_vector or not f.published_date]
+    nvd_severity_threshold = _severity_rank(min_nvd_severity)
+    missing_nvd_ids = [
+        f.cve_id for f in findings
+        if (not f.cvss_vector or not f.published_date)
+        and not is_in_kev(kev_set, f.cve_id)  # KEV = BLOCK regardless, skip NVD
+        and _severity_rank(f.severity) >= nvd_severity_threshold
+    ]
+    skipped_nvd = sum(
+        1 for f in findings
+        if (not f.cvss_vector or not f.published_date)
+        and (is_in_kev(kev_set, f.cve_id) or _severity_rank(f.severity) < nvd_severity_threshold)
+    )
+    if skipped_nvd:
+        click.echo(f"Skipping NVD lookup for {skipped_nvd} CVE(s) (KEV or below --min-nvd-severity).", err=True)
     nvd_data = {}
     if missing_nvd_ids:
         nvd_data = fetch_missing_data(missing_nvd_ids, cache_dir, api_key=nvd_api_key, no_cache=no_cache)
