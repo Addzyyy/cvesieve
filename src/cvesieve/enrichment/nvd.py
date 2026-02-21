@@ -108,14 +108,24 @@ def fetch_missing_data(
     cve_ids: list[str],
     cache_dir: Path,
     api_key: str | None = None,
+    no_cache: bool = False,
 ) -> dict[str, NvdData]:
     """
     For each CVE ID, return NvdData (vector + published date).
     Fetches from NVD only for IDs not already cached.
+    If no_cache=True, also re-fetches entries with missing published dates
+    (NVD may have processed them since last lookup).
     """
     cache = _load_cache(cache_dir)
 
-    missing = [cve_id for cve_id in cve_ids if cve_id not in cache]
+    if no_cache:
+        # Re-fetch anything with incomplete data (missing published date)
+        missing = [
+            cve_id for cve_id in cve_ids
+            if cve_id not in cache or cache[cve_id].published is None
+        ]
+    else:
+        missing = [cve_id for cve_id in cve_ids if cve_id not in cache]
 
     if not missing:
         return {cve_id: cache.get(cve_id, NvdData(None, None)) for cve_id in cve_ids}

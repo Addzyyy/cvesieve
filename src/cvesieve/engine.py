@@ -58,7 +58,7 @@ def classify(enriched: EnrichedFinding, epss_threshold: float = EPSS_THRESHOLD, 
                 reason=f"Network-accessible, EPSS {_pct(enriched.epss_score)} (≥ threshold)",
             )
         if not age_stable:
-            age_desc = f"{enriched.days_since_published}d old" if age_known else "age unknown"
+            age_desc = f"{enriched.days_since_published}d old" if age_known else "age unknown (NVD has no published date yet)"
             return ClassifiedFinding(
                 enriched=enriched,
                 tier=Tier.BLOCK,
@@ -84,7 +84,7 @@ def classify(enriched: EnrichedFinding, epss_threshold: float = EPSS_THRESHOLD, 
             reason=f"Local vector, EPSS {_pct(enriched.epss_score)} (≥ threshold) — fix when convenient",
         )
     if not age_stable:
-        age_desc = f"{enriched.days_since_published}d old" if age_known else "age unknown"
+        age_desc = f"{enriched.days_since_published}d old" if age_known else "age unknown (NVD has no published date yet)"
         return ClassifiedFinding(
             enriched=enriched,
             tier=Tier.WARN,

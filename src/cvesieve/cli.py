@@ -150,7 +150,7 @@ def main(
     missing_nvd_ids = [f.cve_id for f in findings if not f.cvss_vector or not f.published_date]
     nvd_data = {}
     if missing_nvd_ids:
-        nvd_data = fetch_missing_data(missing_nvd_ids, cache_dir, api_key=nvd_api_key)
+        nvd_data = fetch_missing_data(missing_nvd_ids, cache_dir, api_key=nvd_api_key, no_cache=no_cache)
 
     # 4. Enrich findings
     enriched = []

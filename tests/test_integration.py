@@ -137,7 +137,7 @@ def _fake_load_kev(cache_dir, no_cache=False):
     return {"CVE-2024-1234"}
 
 
-def _fake_fetch_missing_data(cve_ids, cache_dir, api_key=None):
+def _fake_fetch_missing_data(cve_ids, cache_dir, api_key=None, no_cache=False):
     """Return empty NvdData for all CVEs — no network call."""
     return {cve_id: NvdData(vector=None, published=None) for cve_id in cve_ids}
 
