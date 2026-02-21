@@ -39,6 +39,38 @@ Then classifies using this decision table:
 
 ---
 
+## Tuning for your risk profile
+
+Every organisation has a different risk tolerance. cvesieve's defaults are conservative (fail open), but all key thresholds are configurable so you can dial the sensitivity to match your environment.
+
+| What you want | Flag | Effect |
+|---------------|------|--------|
+| Only care about HIGH/CRITICAL | `--min-severity high` | LOW and MEDIUM findings removed from output entirely |
+| Stop LOW/MEDIUM from blocking CI | `--min-block-severity high` | LOW/MEDIUM can never be BLOCK unless in KEV |
+| Raise the EPSS bar | `--epss-threshold 0.01` | Only flag CVEs with >1% exploitation probability |
+| Shorten the new-CVE window | `--age-threshold 7` | CVEs older than 7 days can be downgraded (vs 14) |
+| Extend the new-CVE window | `--age-threshold 30` | Hold new CVEs at BLOCK for longer |
+| Speed up large scans | `--min-nvd-severity high` | Skip NVD lookups for LOW/MEDIUM CVEs |
+
+**Conservative (high-security environment):**
+```bash
+cvesieve --epss-threshold 0.0001 --age-threshold 30 scan.sarif.json
+```
+
+**Balanced (recommended starting point):**
+```bash
+cvesieve --min-block-severity high scan.sarif.json
+```
+
+**Aggressive noise reduction (large/legacy images):**
+```bash
+cvesieve --min-severity high --min-block-severity high --min-nvd-severity high scan.sarif.json
+```
+
+Regardless of thresholds, **KEV always wins** — any CVE with confirmed active exploitation is always BLOCK.
+
+---
+
 ## Safety guarantees
 
 - **KEV always wins.** Any CVE with confirmed active exploitation is BLOCK, no exceptions.
