@@ -75,6 +75,8 @@ def _days_since(date_str: str | None) -> int | None:
         return None
     try:
         published = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         return (now - published).days
     except Exception:
