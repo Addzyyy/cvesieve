@@ -114,8 +114,8 @@ class TestWarn:
         assert result.tier == Tier.WARN
 
     def test_local_high_epss(self):
-        """Local vector, EPSS 0.5%, 30 days old → WARN."""
-        ef = make_enriched(attack_vector="LOCAL", epss_score=0.005, days_since_published=30, in_kev=False)
+        """Local vector, EPSS 10% (above 5% local threshold), 30 days old → WARN."""
+        ef = make_enriched(attack_vector="LOCAL", epss_score=0.10, days_since_published=30, in_kev=False)
         result = classify(ef)
         assert result.tier == Tier.WARN
 
@@ -163,11 +163,18 @@ class TestSuppress:
 # ── Edge case tests ───────────────────────────────────────────────────────────
 
 class TestEdgeCases:
-    def test_epss_exactly_at_threshold_is_not_low(self):
-        """EPSS of exactly 0.001 (0.1%) does NOT qualify as low — strictly less than."""
-        ef = make_enriched(attack_vector="LOCAL", epss_score=0.001, days_since_published=30, in_kev=False)
+    def test_epss_exactly_at_network_threshold_is_not_low(self):
+        """EPSS of exactly 0.001 (0.1%) does NOT qualify as low for network — strictly less than."""
+        ef = make_enriched(attack_vector="NETWORK", epss_score=0.001, days_since_published=30, in_kev=False)
         result = classify(ef)
-        # 0.001 is NOT < 0.001, so epss_low is False → WARN
+        # 0.001 is NOT < 0.001, so epss_low is False → BLOCK
+        assert result.tier == Tier.BLOCK
+
+    def test_epss_exactly_at_local_threshold_is_not_low(self):
+        """EPSS of exactly 0.05 (5%) does NOT qualify as low for local — strictly less than."""
+        ef = make_enriched(attack_vector="LOCAL", epss_score=0.05, days_since_published=30, in_kev=False)
+        result = classify(ef)
+        # 0.05 is NOT < 0.05, so local_epss_low is False → WARN
         assert result.tier == Tier.WARN
 
     def test_age_exactly_at_threshold_is_not_stable(self):
@@ -216,3 +223,114 @@ class TestEdgeCases:
         for ef in cases:
             result = classify(ef)
             assert result.reason, f"Empty reason for {ef}"
+
+
+# ── Local EPSS threshold tests ────────────────────────────────────────────────
+
+class TestLocalEpssThreshold:
+    def test_local_above_local_threshold_is_warn(self):
+        """LOCAL CVE with EPSS above the local threshold → WARN."""
+        ef = make_enriched(attack_vector="LOCAL", epss_score=0.10, days_since_published=30, in_kev=False)
+        result = classify(ef, local_epss_threshold=0.05)
+        assert result.tier == Tier.WARN
+        assert "local threshold" in result.reason
+
+    def test_local_below_local_threshold_and_old_is_suppress(self):
+        """LOCAL CVE with EPSS below local threshold and old enough → SUPPRESS."""
+        ef = make_enriched(attack_vector="LOCAL", epss_score=0.02, days_since_published=30, in_kev=False)
+        result = classify(ef, local_epss_threshold=0.05)
+        assert result.tier == Tier.SUPPRESS
+
+    def test_local_below_local_threshold_but_new_is_warn(self):
+        """LOCAL CVE with EPSS below local threshold but too new → WARN."""
+        ef = make_enriched(attack_vector="LOCAL", epss_score=0.02, days_since_published=5, in_kev=False)
+        result = classify(ef, local_epss_threshold=0.05)
+        assert result.tier == Tier.WARN
+
+    def test_local_above_network_threshold_but_below_local_threshold_is_suppress(self):
+        """LOCAL CVE with EPSS above network threshold (0.1%) but below local (5%) + old → SUPPRESS."""
+        ef = make_enriched(attack_vector="LOCAL", epss_score=0.005, days_since_published=30, in_kev=False)
+        result = classify(ef, epss_threshold=0.001, local_epss_threshold=0.05)
+        # 0.005 >= 0.001 (network) but 0.005 < 0.05 (local) → local logic wins → SUPPRESS
+        assert result.tier == Tier.SUPPRESS
+
+    def test_network_cve_unaffected_by_local_epss_threshold(self):
+        """Network CVE classification is not affected by local_epss_threshold."""
+        ef = make_enriched(attack_vector="NETWORK", epss_score=0.005, days_since_published=30, in_kev=False)
+        result_default = classify(ef, epss_threshold=0.001, local_epss_threshold=0.05)
+        result_custom = classify(ef, epss_threshold=0.001, local_epss_threshold=0.99)
+        # Network branch uses epss_threshold only — changing local_epss_threshold has no effect
+        assert result_default.tier == result_custom.tier
+
+    def test_custom_local_threshold_higher_suppresses_more(self):
+        """A higher local threshold suppresses more local CVEs."""
+        ef = make_enriched(attack_vector="LOCAL", epss_score=0.03, days_since_published=30, in_kev=False)
+        result_strict = classify(ef, local_epss_threshold=0.01)   # 0.03 >= 0.01 → WARN
+        result_relaxed = classify(ef, local_epss_threshold=0.05)  # 0.03 < 0.05 → SUPPRESS
+        assert result_strict.tier == Tier.WARN
+        assert result_relaxed.tier == Tier.SUPPRESS
+
+    def test_physical_vector_uses_local_threshold(self):
+        """PHYSICAL vector uses local_epss_threshold, not epss_threshold."""
+        ef = make_enriched(attack_vector="PHYSICAL", epss_score=0.02, days_since_published=30, in_kev=False)
+        result = classify(ef, local_epss_threshold=0.05)
+        # 0.02 < 0.05 → SUPPRESS
+        assert result.tier == Tier.SUPPRESS
+
+    def test_kev_ignores_local_threshold(self):
+        """KEV always wins — local_epss_threshold cannot override it."""
+        ef = make_enriched(attack_vector="LOCAL", epss_score=0.0001, days_since_published=60, in_kev=True)
+        result = classify(ef, local_epss_threshold=0.99)
+        assert result.tier == Tier.BLOCK
+
+
+# ── Age gate floor tests ──────────────────────────────────────────────────────
+
+class TestAgeGateFloor:
+    def test_network_below_floor_skips_age_gate_to_warn(self):
+        """Network CVE with EPSS below floor bypasses age gate → WARN even if new."""
+        ef = make_enriched(attack_vector="NETWORK", epss_score=0.0005, days_since_published=3, in_kev=False)
+        result = classify(ef, epss_threshold=0.001, age_gate_floor=0.001)
+        assert result.tier == Tier.WARN
+        assert "age-gate floor" in result.reason
+
+    def test_network_above_floor_still_blocked_if_new(self):
+        """Network CVE with EPSS above floor still goes through normal age gate → BLOCK if new."""
+        ef = make_enriched(attack_vector="NETWORK", epss_score=0.0008, days_since_published=3, in_kev=False)
+        result = classify(ef, epss_threshold=0.001, age_gate_floor=0.0005)
+        # 0.0008 >= floor (0.0005) → age gate applies → new → BLOCK
+        assert result.tier == Tier.BLOCK
+
+    def test_local_below_floor_skips_age_gate_to_suppress(self):
+        """Local CVE with EPSS below floor bypasses age gate → SUPPRESS even if new."""
+        ef = make_enriched(attack_vector="LOCAL", epss_score=0.001, days_since_published=3, in_kev=False)
+        result = classify(ef, local_epss_threshold=0.05, age_gate_floor=0.005)
+        assert result.tier == Tier.SUPPRESS
+        assert "age-gate floor" in result.reason
+
+    def test_local_above_floor_still_warns_if_new(self):
+        """Local CVE with EPSS above floor still goes through normal age gate → WARN if new."""
+        ef = make_enriched(attack_vector="LOCAL", epss_score=0.003, days_since_published=3, in_kev=False)
+        result = classify(ef, local_epss_threshold=0.05, age_gate_floor=0.001)
+        # 0.003 >= floor (0.001) → age gate applies → new → WARN
+        assert result.tier == Tier.WARN
+        assert "age-gate floor" not in result.reason
+
+    def test_floor_disabled_by_default(self):
+        """With no floor set, new low-EPSS network CVE is BLOCK as normal."""
+        ef = make_enriched(attack_vector="NETWORK", epss_score=0.0005, days_since_published=3, in_kev=False)
+        result = classify(ef)
+        assert result.tier == Tier.BLOCK
+
+    def test_kev_always_wins_over_floor(self):
+        """KEV always wins — age_gate_floor cannot downgrade a KEV CVE."""
+        ef = make_enriched(attack_vector="NETWORK", epss_score=0.0001, days_since_published=1, in_kev=True)
+        result = classify(ef, age_gate_floor=0.99)
+        assert result.tier == Tier.BLOCK
+
+    def test_floor_above_threshold_does_not_suppress_high_epss(self):
+        """Floor only applies after epss_low check — high-EPSS CVEs still BLOCK regardless of floor."""
+        ef = make_enriched(attack_vector="NETWORK", epss_score=0.05, days_since_published=3, in_kev=False)
+        result = classify(ef, epss_threshold=0.001, age_gate_floor=0.99)
+        # EPSS >= threshold → BLOCK before floor is even checked
+        assert result.tier == Tier.BLOCK

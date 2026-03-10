@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cvesieve.enrichment.cvss import extract_attack_vector
+from cvesieve.enrichment.cvss import extract_attack_vector, extract_scope
 from cvesieve.enrichment.epss import load_epss, lookup_epss
 from cvesieve.enrichment.kev import is_in_kev, load_kev
 
@@ -41,6 +41,27 @@ class TestExtractAttackVector:
 
     def test_unknown_av_code(self):
         assert extract_attack_vector("CVSS:3.1/AV:X/AC:L") is None
+
+
+class TestExtractScope:
+    def test_scope_changed(self):
+        assert extract_scope("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H") == "CHANGED"
+
+    def test_scope_unchanged(self):
+        assert extract_scope("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") == "UNCHANGED"
+
+    def test_none_input(self):
+        assert extract_scope(None) is None
+
+    def test_cvss_v2_returns_none(self):
+        """CVSS v2 has no Scope field — always returns None."""
+        assert extract_scope("AV:N/AC:L/Au:N/C:P/I:P/A:P") is None
+
+    def test_missing_scope_component(self):
+        assert extract_scope("CVSS:3.1/AV:N/AC:L/PR:N") is None
+
+    def test_unknown_scope_code(self):
+        assert extract_scope("CVSS:3.1/AV:N/S:X/C:H") is None
 
 
 # ── epss.py ──────────────────────────────────────────────────────────────────

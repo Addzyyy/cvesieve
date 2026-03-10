@@ -31,6 +31,7 @@ class EnrichedFinding:
     attack_vector: str | None  # "NETWORK", "ADJACENT", "LOCAL", "PHYSICAL", or None
     in_kev: bool
     days_since_published: int | None
+    cvss_scope: str | None = None  # "CHANGED", "UNCHANGED", or None (v2/unknown)
 
 
 @dataclass

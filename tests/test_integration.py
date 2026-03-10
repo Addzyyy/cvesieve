@@ -10,13 +10,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from cvesieve.cli import main
+from cvesieve.cli import main, _apply_exposure_cap, _apply_privilege_cap
 from cvesieve.enrichment.cvss import extract_attack_vector
 from cvesieve.enrichment.epss import load_epss, lookup_epss
 from cvesieve.enrichment.kev import is_in_kev, load_kev
 from cvesieve.enrichment.nvd import NvdData
 from cvesieve.engine import classify
-from cvesieve.models import EnrichedFinding, Finding, Tier
+from cvesieve.models import ClassifiedFinding, EnrichedFinding, Finding, Tier
 from cvesieve.parser import parse_sarif
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -272,3 +272,198 @@ class TestMinBlockSeverity:
         capped = [f for f in data["warn"] if "capped at WARN" in f["reason"]]
         # There may or may not be capped findings depending on fixture data — just ensure no crash
         assert isinstance(capped, list)
+
+
+def _fake_fetch_missing_data_with_old_date(cve_ids, cache_dir, api_key=None, no_cache=False):
+    """Return NvdData with an old published date — ensures age_stable=True in tests."""
+    return {cve_id: NvdData(vector=None, published="2020-01-01T00:00:00Z") for cve_id in cve_ids}
+
+
+class TestLocalEpssThreshold:
+    def _run_cli(self, sarif_file: str, tmp_path: Path, extra_args: list = None, old_dates: bool = False):
+        runner = CliRunner()
+        fetch_mock = _fake_fetch_missing_data_with_old_date if old_dates else _fake_fetch_missing_data
+        with patch("cvesieve.cli.load_epss", side_effect=_fake_load_epss):
+            with patch("cvesieve.cli.load_kev", side_effect=_fake_load_kev):
+                with patch("cvesieve.cli.fetch_missing_data", side_effect=fetch_mock):
+                    result = runner.invoke(
+                        main,
+                        [str(FIXTURES / sarif_file), f"--cache-dir={tmp_path}", "--no-cache"] + (extra_args or []),
+                        catch_exceptions=False,
+                    )
+        return result
+
+    def test_json_metadata_includes_both_thresholds(self, tmp_path):
+        """JSON output must include epss_network and epss_local in metadata.thresholds."""
+        result = self._run_cli("trivy.sarif.json", tmp_path, ["--format", "json"])
+        data = _parse_json_output(result.output)
+        thresholds = data["metadata"]["thresholds"]
+        assert "epss_network" in thresholds
+        assert "epss_local" in thresholds
+        assert "age_days" in thresholds
+
+    def test_json_metadata_reflects_custom_local_threshold(self, tmp_path):
+        """--local-epss-threshold value must appear in JSON metadata."""
+        result = self._run_cli(
+            "trivy.sarif.json", tmp_path,
+            ["--format", "json", "--local-epss-threshold", "0.10"],
+        )
+        data = _parse_json_output(result.output)
+        assert data["metadata"]["thresholds"]["epss_local"] == 0.10
+
+    def test_local_cve_suppressed_with_default_local_threshold(self, tmp_path):
+        """LOCAL CVE with EPSS well below 5% and old published date → SUPPRESS with default threshold."""
+        # CVE-2024-5555: LOCAL, EPSS=0.00015. With old_dates=True age_stable=True → SUPPRESS
+        result = self._run_cli("grype.sarif.json", tmp_path, ["--format", "json"], old_dates=True)
+        data = _parse_json_output(result.output)
+        suppress_ids = {f["cve_id"] for f in data["suppress"]}
+        assert "CVE-2024-5555" in suppress_ids
+
+    def test_local_cve_warns_with_strict_local_threshold(self, tmp_path):
+        """LOCAL CVE with EPSS above a very strict local threshold → WARN instead of SUPPRESS."""
+        # CVE-2024-5555: EPSS=0.00015; with --local-epss-threshold 0.0001, 0.00015 >= 0.0001 → WARN
+        result = self._run_cli(
+            "grype.sarif.json", tmp_path,
+            ["--format", "json", "--local-epss-threshold", "0.0001"],
+            old_dates=True,
+        )
+        data = _parse_json_output(result.output)
+        warn_ids = {f["cve_id"] for f in data["warn"]}
+        suppress_ids = {f["cve_id"] for f in data["suppress"]}
+        assert "CVE-2024-5555" in warn_ids
+        assert "CVE-2024-5555" not in suppress_ids
+
+
+# ── Context modifier unit tests ───────────────────────────────────────────────
+
+def _make_classified(
+    tier: Tier,
+    attack_vector: str | None = "NETWORK",
+    cvss_scope: str | None = None,
+    in_kev: bool = False,
+) -> ClassifiedFinding:
+    finding = Finding(
+        cve_id="CVE-2024-TEST",
+        severity="HIGH",
+        package_name="test",
+        installed_version="1.0",
+        fixed_version=None,
+        cvss_vector=None,
+        published_date=None,
+        scanner="trivy",
+        description=None,
+    )
+    enriched = EnrichedFinding(
+        finding=finding,
+        epss_score=0.05,
+        epss_percentile=0.9,
+        attack_vector=attack_vector,
+        in_kev=in_kev,
+        days_since_published=30,
+        cvss_scope=cvss_scope,
+    )
+    return ClassifiedFinding(enriched=enriched, tier=tier, reason="test reason")
+
+
+class TestExposureCap:
+    def test_internal_caps_network_block_to_warn(self):
+        cf = _make_classified(Tier.BLOCK, attack_vector="NETWORK")
+        result = _apply_exposure_cap([cf], "internal")
+        assert result[0].tier == Tier.WARN
+        assert "internal-only" in result[0].reason
+
+    def test_internal_caps_adjacent_block_to_warn(self):
+        cf = _make_classified(Tier.BLOCK, attack_vector="ADJACENT")
+        result = _apply_exposure_cap([cf], "internal")
+        assert result[0].tier == Tier.WARN
+
+    def test_internal_caps_unknown_vector_block_to_warn(self):
+        """Unknown vector is treated as network — capped on internal."""
+        cf = _make_classified(Tier.BLOCK, attack_vector=None)
+        result = _apply_exposure_cap([cf], "internal")
+        assert result[0].tier == Tier.WARN
+
+    def test_internal_does_not_cap_local_block(self):
+        """Local vector BLOCKs are not affected by exposure — they'd only BLOCK via KEV."""
+        cf = _make_classified(Tier.BLOCK, attack_vector="LOCAL", in_kev=True)
+        result = _apply_exposure_cap([cf], "internal")
+        assert result[0].tier == Tier.BLOCK
+
+    def test_internal_never_caps_kev(self):
+        cf = _make_classified(Tier.BLOCK, attack_vector="NETWORK", in_kev=True)
+        result = _apply_exposure_cap([cf], "internal")
+        assert result[0].tier == Tier.BLOCK
+
+    def test_public_changes_nothing(self):
+        cf = _make_classified(Tier.BLOCK, attack_vector="NETWORK")
+        result = _apply_exposure_cap([cf], "public")
+        assert result[0].tier == Tier.BLOCK
+
+    def test_internal_does_not_affect_warn_or_suppress(self):
+        warn = _make_classified(Tier.WARN, attack_vector="NETWORK")
+        suppress = _make_classified(Tier.SUPPRESS, attack_vector="NETWORK")
+        result = _apply_exposure_cap([warn, suppress], "internal")
+        assert result[0].tier == Tier.WARN
+        assert result[1].tier == Tier.SUPPRESS
+
+
+class TestPrivilegeCap:
+    def test_rootless_caps_scope_changed_block_to_warn(self):
+        cf = _make_classified(Tier.BLOCK, cvss_scope="CHANGED")
+        result = _apply_privilege_cap([cf], "rootless")
+        assert result[0].tier == Tier.WARN
+        assert "rootless" in result[0].reason
+
+    def test_rootless_does_not_cap_scope_unchanged(self):
+        cf = _make_classified(Tier.BLOCK, cvss_scope="UNCHANGED")
+        result = _apply_privilege_cap([cf], "rootless")
+        assert result[0].tier == Tier.BLOCK
+
+    def test_rootless_does_not_cap_unknown_scope(self):
+        """Unknown scope (v2 or missing) is not downgraded — fail open."""
+        cf = _make_classified(Tier.BLOCK, cvss_scope=None)
+        result = _apply_privilege_cap([cf], "rootless")
+        assert result[0].tier == Tier.BLOCK
+
+    def test_rootless_never_caps_kev(self):
+        cf = _make_classified(Tier.BLOCK, cvss_scope="CHANGED", in_kev=True)
+        result = _apply_privilege_cap([cf], "rootless")
+        assert result[0].tier == Tier.BLOCK
+
+    def test_root_changes_nothing(self):
+        cf = _make_classified(Tier.BLOCK, cvss_scope="CHANGED")
+        result = _apply_privilege_cap([cf], "root")
+        assert result[0].tier == Tier.BLOCK
+
+
+class TestContextCli:
+    def _run_cli(self, sarif_file: str, tmp_path: Path, extra_args: list = None):
+        runner = CliRunner()
+        with patch("cvesieve.cli.load_epss", side_effect=_fake_load_epss):
+            with patch("cvesieve.cli.load_kev", side_effect=_fake_load_kev):
+                with patch("cvesieve.cli.fetch_missing_data", side_effect=_fake_fetch_missing_data):
+                    result = runner.invoke(
+                        main,
+                        [str(FIXTURES / sarif_file), f"--cache-dir={tmp_path}", "--no-cache"] + (extra_args or []),
+                        catch_exceptions=False,
+                    )
+        return result
+
+    def test_json_metadata_includes_context(self, tmp_path):
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "json", "--exposure", "internal"])
+        data = _parse_json_output(result.output)
+        assert "context" in data["metadata"]
+        assert data["metadata"]["context"]["exposure"] == "internal"
+
+    def test_exposure_internal_reflected_in_metadata(self, tmp_path):
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "json", "--exposure", "internal", "--privilege", "rootless"])
+        data = _parse_json_output(result.output)
+        assert data["metadata"]["context"]["exposure"] == "internal"
+        assert data["metadata"]["context"]["privilege"] == "rootless"
+
+    def test_kev_still_blocks_with_internal_exposure(self, tmp_path):
+        """KEV always wins — internal exposure cannot suppress a KEV CVE."""
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "json", "--exposure", "internal"])
+        data = _parse_json_output(result.output)
+        block_ids = {f["cve_id"] for f in data["block"]}
+        assert "CVE-2024-1234" in block_ids  # KEV hit — always BLOCK

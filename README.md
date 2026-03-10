@@ -26,10 +26,12 @@ Then classifies using this decision table:
 | No | Network / Adjacent / Unknown | < 0.1% | No | **BLOCK** |
 | No | Network / Adjacent / Unknown | < 0.1% | Yes | **WARN** |
 | No | Network / Adjacent / Unknown | Unknown | any | **BLOCK** |
-| No | Local / Physical | ≥ 0.1% | any | **WARN** |
-| No | Local / Physical | < 0.1% | No | **WARN** |
-| No | Local / Physical | < 0.1% | Yes | **SUPPRESS** |
+| No | Local / Physical | ≥ 5% | any | **WARN** |
+| No | Local / Physical | < 5% | No | **WARN** |
+| No | Local / Physical | < 5% | Yes | **SUPPRESS** |
 | No | Local / Physical | Unknown | any | **WARN** |
+
+> Network and local vectors use separate EPSS thresholds (0.1% and 5% by default). All thresholds are configurable — see [Tuning for your risk profile](#tuning-for-your-risk-profile).
 
 | Tier | CI behaviour | Action |
 |------|-------------|--------|
@@ -47,16 +49,34 @@ Every organisation has a different risk tolerance. cvesieve's defaults are conse
 |---------------|------|--------|
 | Only care about HIGH/CRITICAL | `--min-severity high` | LOW and MEDIUM findings removed from output entirely |
 | Stop LOW/MEDIUM from blocking CI | `--min-block-severity high` | LOW/MEDIUM can never be BLOCK unless in KEV |
-| Raise the EPSS bar | `--epss-threshold 0.01` | Only flag CVEs with >1% exploitation probability |
+| Raise the EPSS bar for everything | `--epss-threshold 0.01` | Sets a 1% base threshold for both network and local vectors |
+| Raise the bar for network only | `--network-epss-threshold 0.01` | Only affects network/adjacent CVEs |
+| Relax local CVE sensitivity | `--local-epss-threshold 0.10` | Local CVEs need >10% EPSS to WARN instead of suppressing |
+| Skip age gate on very-low-EPSS CVEs | `--age-gate-floor 0.001` | CVEs below this EPSS bypass the 14-day window (see below) |
 | Shorten the new-CVE window | `--age-threshold 7` | CVEs older than 7 days can be downgraded (vs 14) |
 | Extend the new-CVE window | `--age-threshold 30` | Hold new CVEs at BLOCK for longer |
 | Speed up large scans | `--min-nvd-severity high` | Skip NVD lookups for LOW/MEDIUM CVEs |
+| Service isn't internet-facing | `--exposure internal` | Network BLOCKs capped at WARN (KEV still overrides) |
+| Container runs rootless | `--privilege rootless` | Scope:Changed BLOCKs capped at WARN (KEV still overrides) |
+
+### Separate EPSS thresholds for network vs local
+
+Network-accessible and local CVEs have fundamentally different risk profiles. cvesieve uses separate thresholds for each:
+
+- **`--network-epss-threshold`** (default: 0.001 = 0.1%) — controls when a network CVE is BLOCK vs WARN. Deliberately strict: a 1-in-1,000 exploitation probability is enough to fail the pipeline.
+- **`--local-epss-threshold`** (default: 0.05 = 5%) — controls when a local CVE is WARN vs SUPPRESS. Much more relaxed: local CVEs require physical or authenticated access, so only those with a working exploit (high EPSS) warrant attention.
+
+Use `--epss-threshold` to set a single value for both vectors at once, then override per-vector if needed:
+
+```bash
+# Set both to 1%
+cvesieve --epss-threshold 0.01 scan.sarif.json
+
+# Set base to 1%, but relax local to 10%
+cvesieve --epss-threshold 0.01 --local-epss-threshold 0.10 scan.sarif.json
+```
 
 ### Choosing an EPSS threshold
-
-The default threshold is **0.1% (0.001)** — deliberately strict. A CVE only needs a 1-in-1,000 exploitation probability to be flagged. This is a conservative starting point that keeps the pipeline safe while you build confidence in the tool.
-
-For most teams **1% (0.01)** is a more practical threshold:
 
 | EPSS | What it usually means |
 |------|----------------------|
@@ -65,16 +85,76 @@ For most teams **1% (0.01)** is a more practical threshold:
 | 1–10% | Elevated — PoC likely exists or exploitation is starting |
 | > 10% | Active exploitation underway — patch immediately |
 
-The real noise reduction in cvesieve comes from **attack vector and age**, not the EPSS threshold alone — most CVEs are suppressed because they're LOCAL vector and old, not because their EPSS is below 0.1%. Raising the threshold to 1% reduces additional noise without meaningfully increasing risk for most environments.
+The real noise reduction in cvesieve comes from **attack vector and age**, not EPSS thresholds alone — most CVEs are suppressed because they're LOCAL vector and old. Raising the network threshold to 1% reduces additional noise without meaningfully increasing risk for most environments.
+
+### The age-gate floor
+
+By default, network CVEs younger than 14 days are held at BLOCK regardless of EPSS — this gives time for exploitation data to mature. But if you run cvesieve daily, the EPSS score is already refreshed every run, so the stabilisation window is effectively 24 hours, not 14 days.
+
+`--age-gate-floor` lets you skip the age gate for CVEs whose EPSS is already so low they're almost certainly safe:
+
+```bash
+cvesieve --age-gate-floor 0.001 scan.sarif.json
+```
+
+With this set:
+- A **network CVE** with EPSS < 0.1% and 3 days old → **WARN** immediately (instead of BLOCK for 14 days)
+- A **local CVE** with EPSS < 0.1% and 3 days old → **SUPPRESS** immediately (instead of WARN for 14 days)
+
+The floor only fires after the threshold check — high-EPSS CVEs still BLOCK regardless. And KEV always wins.
+
+The reason string will say `(below age-gate floor)` so it's clear why the age gate was skipped.
+
+### Deployment context
+
+The same CVE isn't equally dangerous everywhere. `--exposure` and `--privilege` let you tell cvesieve about your deployment environment so it can apply appropriate context.
+
+**`--exposure [public|internal]`**
+
+If your service is not internet-facing, network-accessible CVEs are categorically less urgent — an attacker can't reach them from the outside. With `--exposure internal`, non-KEV NETWORK/ADJACENT BLOCKs are capped at WARN.
+
+```bash
+cvesieve --exposure internal scan.sarif.json
+```
+
+**`--privilege [root|rootless]`**
+
+Container escape CVEs (CVSS Scope:Changed) are materially less dangerous in a rootless container — escaping only lands you as an unprivileged user on the host, not root. With `--privilege rootless`, non-KEV Scope:Changed BLOCKs are capped at WARN.
+
+```bash
+cvesieve --privilege rootless scan.sarif.json
+```
+
+Both flags can be combined:
+
+```bash
+cvesieve --exposure internal --privilege rootless scan.sarif.json
+```
+
+**KEV always wins** regardless of context — confirmed active exploitation is always BLOCK.
+
+The reason string shows when a context modifier fired, e.g. `[capped at WARN — service is internal-only]`, so the audit trail is clear.
+
+---
 
 **Conservative (high-security environment):**
 ```bash
-cvesieve --epss-threshold 0.0001 --age-threshold 30 scan.sarif.json
+cvesieve --network-epss-threshold 0.0001 --age-threshold 30 scan.sarif.json
 ```
 
 **Balanced (recommended starting point):**
 ```bash
 cvesieve --min-block-severity high scan.sarif.json
+```
+
+**Daily CI with relaxed local sensitivity:**
+```bash
+cvesieve --epss-threshold 0.01 --age-gate-floor 0.001 scan.sarif.json
+```
+
+**Hardened internal service (rootless container, not internet-facing):**
+```bash
+cvesieve --exposure internal --privilege rootless scan.sarif.json
 ```
 
 **Aggressive noise reduction (large/legacy images):**
@@ -91,7 +171,7 @@ Regardless of thresholds, **KEV always wins** — any CVE with confirmed active 
 - **KEV always wins.** Any CVE with confirmed active exploitation is BLOCK, no exceptions.
 - **Fail open.** Missing EPSS, unparseable CVSS vector, or unknown age → pushed toward the higher tier, never suppressed.
 - **Nothing is hidden.** SUPPRESS findings are visible in the full report.
-- **14-day stabilisation.** CVEs younger than 14 days are never downgraded — EPSS needs time to calibrate.
+- **14-day stabilisation.** CVEs younger than 14 days are never downgraded — EPSS needs time to calibrate. Override with `--age-gate-floor` if you run daily and trust fresh EPSS scores.
 
 ---
 
@@ -165,10 +245,30 @@ Summary: 47 total → 8 block, 15 warn, 24 suppress (83.0% noise reduction)
 Options:
   -f, --format [table|json|summary]              Output format (default: table)
   -o, --output FILE                              Write output to file
-  --epss-threshold FLOAT                         EPSS score threshold 0.0-1.0 (default: 0.001)
-                                                 Findings below this are considered low-probability.
-                                                 Raise to reduce noise, lower to be more conservative.
+
+  --epss-threshold FLOAT                         Set EPSS threshold for ALL vectors (default: uses
+                                                 per-vector defaults). Overridden by --network-epss-threshold
+                                                 or --local-epss-threshold.
+  --network-epss-threshold FLOAT                 EPSS threshold for NETWORK/ADJACENT vectors (default: 0.001)
+                                                 CVEs at or above this threshold are BLOCK.
+  --local-epss-threshold FLOAT                   EPSS threshold for LOCAL/PHYSICAL vectors (default: 0.05)
+                                                 CVEs at or above this threshold are WARN (not SUPPRESS).
   --age-threshold INT                            Minimum days since publication for downgrade (default: 14)
+  --age-gate-floor FLOAT                         Skip the 14-day age gate for CVEs with EPSS below this value.
+                                                 Network CVEs go straight to WARN; local CVEs go straight to
+                                                 SUPPRESS. Useful when running cvesieve daily — EPSS already
+                                                 refreshes every 24h so the gate is largely redundant for
+                                                 very-low-EPSS findings. Disabled by default.
+
+  --exposure [public|internal]                   Deployment exposure context (default: none / not set)
+                                                 'internal': caps non-KEV NETWORK/ADJACENT BLOCKs at WARN.
+                                                 Reason string updated to show why.
+  --privilege [root|rootless]                    Container privilege context (default: none / not set)
+                                                 'rootless': caps non-KEV Scope:Changed BLOCKs at WARN.
+                                                 Scope:Changed CVEs can escape the container; rootless limits
+                                                 the blast radius to an unprivileged host user.
+                                                 Unknown scope (CVSS v2 or missing) is not downgraded.
+
   --min-severity [low|medium|high|critical]      Ignore findings below this severity (default: low)
                                                  BLOCK findings are always shown — KEV always wins.
   --min-block-severity [low|medium|high|critical]
@@ -236,11 +336,26 @@ cvesieve --min-severity high --min-block-severity high scan.sarif.json
 # Speed up NVD lookups on large scans — skip LOW/MEDIUM entirely
 cvesieve --min-nvd-severity high --min-block-severity high scan.sarif.json
 
-# More aggressive noise reduction — raise EPSS threshold to 1%
+# Raise EPSS threshold to 1% for both network and local
 cvesieve --epss-threshold 0.01 scan.sarif.json
 
-# Strict mode — lower EPSS threshold, flag newer CVEs for longer
-cvesieve --epss-threshold 0.0001 --age-threshold 30 scan.sarif.json
+# Fine-grained: strict network threshold, relaxed local threshold
+cvesieve --network-epss-threshold 0.001 --local-epss-threshold 0.10 scan.sarif.json
+
+# Daily CI: skip age gate for very-low-EPSS CVEs (EPSS refreshes every 24h anyway)
+cvesieve --age-gate-floor 0.001 scan.sarif.json
+
+# Strict mode — tighter EPSS, longer stabilisation window
+cvesieve --network-epss-threshold 0.0001 --age-threshold 30 scan.sarif.json
+
+# Internal service — network BLOCKs capped at WARN
+cvesieve --exposure internal scan.sarif.json
+
+# Rootless container — Scope:Changed BLOCKs capped at WARN
+cvesieve --privilege rootless scan.sarif.json
+
+# Hardened internal service — both context modifiers together
+cvesieve --exposure internal --privilege rootless scan.sarif.json
 
 # Refresh stale NVD cache entries (e.g. CVEs previously cached with no published date)
 cvesieve --no-cache scan.sarif.json

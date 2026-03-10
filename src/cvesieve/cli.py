@@ -16,7 +16,7 @@ import click
 
 from cvesieve import __version__
 from cvesieve.engine import classify
-from cvesieve.enrichment.cvss import extract_attack_vector
+from cvesieve.enrichment.cvss import extract_attack_vector, extract_scope
 from cvesieve.enrichment.epss import load_epss, lookup_epss
 from cvesieve.enrichment.kev import is_in_kev, load_kev
 from cvesieve.enrichment.nvd import fetch_missing_data
@@ -70,6 +70,62 @@ def _apply_block_severity_cap(
     return result
 
 
+_NETWORK_LIKE_VECTORS = {"NETWORK", "ADJACENT"}
+
+
+def _apply_exposure_cap(
+    classified: list[ClassifiedFinding], exposure: str
+) -> list[ClassifiedFinding]:
+    """
+    If exposure is 'internal', cap non-KEV network/adjacent/unknown-vector BLOCKs at WARN.
+    Internal services aren't reachable from the internet, so network CVEs are categorically
+    less urgent. KEV always wins.
+    """
+    if exposure != "internal":
+        return classified
+    result = []
+    for cf in classified:
+        is_network_like = cf.enriched.attack_vector in _NETWORK_LIKE_VECTORS or cf.enriched.attack_vector is None
+        if cf.tier == Tier.BLOCK and not cf.enriched.in_kev and is_network_like:
+            result.append(ClassifiedFinding(
+                enriched=cf.enriched,
+                tier=Tier.WARN,
+                reason=cf.reason + " [capped at WARN — service is internal-only]",
+            ))
+        else:
+            result.append(cf)
+    return result
+
+
+def _apply_privilege_cap(
+    classified: list[ClassifiedFinding], privilege: str
+) -> list[ClassifiedFinding]:
+    """
+    If privilege is 'rootless', cap non-KEV Scope:Changed BLOCKs at WARN.
+    Scope:Changed CVEs can escape the vulnerable component (container escape).
+    In a rootless container, escaping only gives unprivileged host access — materially
+    less dangerous. Unknown scope (v2 vectors or missing) is not downgraded (fail open).
+    KEV always wins.
+    """
+    if privilege != "rootless":
+        return classified
+    result = []
+    for cf in classified:
+        if (
+            cf.tier == Tier.BLOCK
+            and not cf.enriched.in_kev
+            and cf.enriched.cvss_scope == "CHANGED"
+        ):
+            result.append(ClassifiedFinding(
+                enriched=cf.enriched,
+                tier=Tier.WARN,
+                reason=cf.reason + " [capped at WARN — Scope:Changed but container is rootless]",
+            ))
+        else:
+            result.append(cf)
+    return result
+
+
 def _days_since(date_str: str | None) -> int | None:
     if not date_str:
         return None
@@ -87,8 +143,11 @@ def _days_since(date_str: str | None) -> int | None:
 @click.argument("input_file", required=False, type=click.Path(exists=True, path_type=Path))
 @click.option("-f", "--format", "output_format", type=click.Choice(["table", "json", "summary"]), default="table", show_default=True)
 @click.option("-o", "--output", "output_file", type=click.Path(path_type=Path), default=None)
-@click.option("--epss-threshold", type=float, default=0.001, show_default=True, help="EPSS score threshold (0.0-1.0)")
+@click.option("--epss-threshold", type=float, default=None, help="Set EPSS threshold for ALL vectors (overridden by --network-epss-threshold / --local-epss-threshold)")
+@click.option("--network-epss-threshold", type=float, default=None, help="EPSS threshold for NETWORK/ADJACENT vectors (default: 0.001). Overrides --epss-threshold for network.")
+@click.option("--local-epss-threshold", type=float, default=None, help="EPSS threshold for LOCAL/PHYSICAL vectors (default: 0.05). Overrides --epss-threshold for local.")
 @click.option("--age-threshold", type=int, default=14, show_default=True, help="Minimum days since publication for downgrade")
+@click.option("--age-gate-floor", type=float, default=None, help="Skip the age gate for CVEs with EPSS below this value — they go straight to WARN (network) or SUPPRESS (local)")
 @click.option("--cache-dir", type=click.Path(path_type=Path), default=DEFAULT_CACHE_DIR, show_default=True)
 @click.option("--no-cache", is_flag=True, default=False, help="Force re-download of EPSS and KEV data")
 @click.option("--tier", type=click.Choice(["block", "warn", "suppress", "all"]), default="all", show_default=True)
@@ -96,13 +155,18 @@ def _days_since(date_str: str | None) -> int | None:
 @click.option("--min-block-severity", type=click.Choice(["low", "medium", "high", "critical"], case_sensitive=False), default="low", show_default=True, help="Cap findings below this severity at WARN — they cannot be BLOCK unless in KEV")
 @click.option("--nvd-api-key", envvar="NVD_API_KEY", default=None, help="NVD API key for CVSS vector lookup (or set NVD_API_KEY env var). Get one free at https://nvd.nist.gov/developers/request-an-api-key")
 @click.option("--min-nvd-severity", type=click.Choice(["low", "medium", "high", "critical"], case_sensitive=False), default="low", show_default=True, help="Skip NVD lookups for CVEs below this severity (faster but fail-open for skipped CVEs)")
+@click.option("--exposure", type=click.Choice(["public", "internal"], case_sensitive=False), default=None, help="Deployment exposure: 'internal' caps non-KEV network BLOCKs at WARN")
+@click.option("--privilege", type=click.Choice(["root", "rootless"], case_sensitive=False), default=None, help="Container privilege: 'rootless' caps non-KEV Scope:Changed BLOCKs at WARN")
 @click.version_option(version=__version__, prog_name="cvesieve")
 def main(
     input_file: Path | None,
     output_format: str,
     output_file: Path | None,
-    epss_threshold: float,
+    epss_threshold: float | None,
+    network_epss_threshold: float | None,
+    local_epss_threshold: float | None,
     age_threshold: int,
+    age_gate_floor: float | None,
     cache_dir: Path,
     no_cache: bool,
     tier: str,
@@ -110,12 +174,19 @@ def main(
     min_block_severity: str,
     nvd_api_key: str | None,
     min_nvd_severity: str,
+    exposure: str | None,
+    privilege: str | None,
 ) -> None:
     """Filter CVE scanner noise using real-world exploitability signals.
 
     INPUT_FILE: Path to SARIF JSON from Docker Scout, Trivy, or Grype.
     If omitted, reads from stdin.
     """
+    # Resolve effective EPSS thresholds:
+    # --epss-threshold sets a base for both; specific flags override per vector type.
+    effective_network_threshold = network_epss_threshold if network_epss_threshold is not None else (epss_threshold if epss_threshold is not None else 0.001)
+    effective_local_threshold = local_epss_threshold if local_epss_threshold is not None else (epss_threshold if epss_threshold is not None else 0.05)
+
     # 1. Read SARIF input
     try:
         if input_file:
@@ -176,6 +247,7 @@ def main(
         nvd = nvd_data.get(f.cve_id)
         cvss_vector = f.cvss_vector or (nvd.vector if nvd else None)
         attack_vector = extract_attack_vector(cvss_vector)
+        cvss_scope = extract_scope(cvss_vector)
         in_kev = is_in_kev(kev_set, f.cve_id)
         published = f.published_date or (nvd.published if nvd else None)
         days = _days_since(published)
@@ -185,16 +257,23 @@ def main(
             epss_score=epss_score,
             epss_percentile=epss_pct,
             attack_vector=attack_vector,
+            cvss_scope=cvss_scope,
             in_kev=in_kev,
             days_since_published=days,
         ))
 
     # 5. Classify
-    classified = [classify(ef, epss_threshold=epss_threshold, age_threshold=age_threshold) for ef in enriched]
+    classified = [classify(ef, epss_threshold=effective_network_threshold, local_epss_threshold=effective_local_threshold, age_threshold=age_threshold, age_gate_floor=age_gate_floor) for ef in enriched]
 
     # 5b. Cap low-severity findings at WARN (KEV always overrides)
     if min_block_severity.lower() != "low":
         classified = _apply_block_severity_cap(classified, min_block_severity)
+
+    # 5d. Apply deployment context modifiers (KEV always overrides)
+    if exposure:
+        classified = _apply_exposure_cap(classified, exposure)
+    if privilege:
+        classified = _apply_privilege_cap(classified, privilege)
 
     # 5c. Apply severity filter (BLOCK findings always pass through regardless)
     if min_severity.lower() != "low":
@@ -208,7 +287,7 @@ def main(
     if output_format == "table":
         result = format_table(classified, scanner=scanner, tier_filter=tier)
     elif output_format == "json":
-        result = format_json(classified, scanner=scanner, epss_threshold=epss_threshold, age_threshold=age_threshold)
+        result = format_json(classified, scanner=scanner, epss_threshold=effective_network_threshold, local_epss_threshold=effective_local_threshold, age_threshold=age_threshold, age_gate_floor=age_gate_floor, exposure=exposure, privilege=privilege)
     else:
         result = format_summary(classified, scanner=scanner)
 

@@ -17,8 +17,9 @@ Decision table (source of truth — do not add rules beyond this):
 """
 from cvesieve.models import ClassifiedFinding, EnrichedFinding, Tier
 
-EPSS_THRESHOLD = 0.001  # 0.1%
-AGE_THRESHOLD = 14      # days
+EPSS_THRESHOLD = 0.001       # 0.1% — network/adjacent vectors
+LOCAL_EPSS_THRESHOLD = 0.05  # 5.0% — local/physical vectors need a working exploit to matter
+AGE_THRESHOLD = 14           # days
 
 _LOCAL_VECTORS = {"LOCAL", "PHYSICAL"}
 
@@ -27,7 +28,7 @@ def _pct(score: float) -> str:
     return f"{score * 100:.2f}%"
 
 
-def classify(enriched: EnrichedFinding, epss_threshold: float = EPSS_THRESHOLD, age_threshold: int = AGE_THRESHOLD) -> ClassifiedFinding:
+def classify(enriched: EnrichedFinding, epss_threshold: float = EPSS_THRESHOLD, local_epss_threshold: float = LOCAL_EPSS_THRESHOLD, age_threshold: int = AGE_THRESHOLD, age_gate_floor: float | None = None) -> ClassifiedFinding:
     # KEV always wins — check first, no exceptions
     if enriched.in_kev:
         return ClassifiedFinding(
@@ -57,6 +58,12 @@ def classify(enriched: EnrichedFinding, epss_threshold: float = EPSS_THRESHOLD, 
                 tier=Tier.BLOCK,
                 reason=f"Network-accessible, EPSS {_pct(enriched.epss_score)} (≥ threshold)",
             )
+        if age_gate_floor is not None and enriched.epss_score < age_gate_floor:
+            return ClassifiedFinding(
+                enriched=enriched,
+                tier=Tier.WARN,
+                reason=f"Network-accessible, EPSS {_pct(enriched.epss_score)} (below age-gate floor) — low risk, fix when convenient",
+            )
         if not age_stable:
             age_desc = f"{enriched.days_since_published}d old" if age_known else "age unknown (NVD has no published date yet)"
             return ClassifiedFinding(
@@ -77,11 +84,18 @@ def classify(enriched: EnrichedFinding, epss_threshold: float = EPSS_THRESHOLD, 
             tier=Tier.WARN,
             reason=f"Local vector ({enriched.attack_vector}), EPSS unknown — fail open",
         )
-    if not epss_low:
+    local_epss_low = enriched.epss_score < local_epss_threshold
+    if not local_epss_low:
         return ClassifiedFinding(
             enriched=enriched,
             tier=Tier.WARN,
-            reason=f"Local vector, EPSS {_pct(enriched.epss_score)} (≥ threshold) — fix when convenient",
+            reason=f"Local vector, EPSS {_pct(enriched.epss_score)} (≥ local threshold) — fix when convenient",
+        )
+    if age_gate_floor is not None and enriched.epss_score < age_gate_floor:
+        return ClassifiedFinding(
+            enriched=enriched,
+            tier=Tier.SUPPRESS,
+            reason=f"Local vector, EPSS {_pct(enriched.epss_score)} (below age-gate floor) — near-zero risk",
         )
     if not age_stable:
         age_desc = f"{enriched.days_since_published}d old" if age_known else "age unknown (NVD has no published date yet)"

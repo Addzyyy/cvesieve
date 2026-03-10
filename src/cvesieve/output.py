@@ -32,10 +32,10 @@ def _vector_short(vector: str | None) -> str:
 
 
 def _noise_reduction(total: int, block: int, warn: int) -> float:
-    suppressed = total - block - warn
+    """Percentage of CVEs that won't fail the pipeline (WARN + SUPPRESS)."""
     if total == 0:
         return 0.0
-    return suppressed / total * 100
+    return (total - block) / total * 100
 
 
 def format_table(
@@ -131,7 +131,11 @@ def format_json(
     findings: list[ClassifiedFinding],
     scanner: str = "unknown",
     epss_threshold: float = 0.001,
+    local_epss_threshold: float = 0.05,
     age_threshold: int = 14,
+    age_gate_floor: float | None = None,
+    exposure: str | None = None,
+    privilege: str | None = None,
 ) -> str:
     by_tier: dict[Tier, list] = {Tier.BLOCK: [], Tier.WARN: [], Tier.SUPPRESS: []}
     for f in findings:
@@ -149,8 +153,14 @@ def format_json(
             "scanner": scanner,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "thresholds": {
-                "epss": epss_threshold,
+                "epss_network": epss_threshold,
+                "epss_local": local_epss_threshold,
                 "age_days": age_threshold,
+                "age_gate_floor": age_gate_floor,
+            },
+            "context": {
+                "exposure": exposure,
+                "privilege": privilege,
             },
         },
         "summary": {
