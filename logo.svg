@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#818cf8" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="roundedSquare">
+      <rect x="32" y="32" width="448" height="448" rx="96"/>
+    </clipPath>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect x="32" y="32" width="448" height="448" rx="96" fill="url(#bg)"/>
+
+  <!-- Subtle glow behind funnel -->
+  <ellipse cx="256" cy="240" rx="140" ry="160" fill="url(#glow)" clip-path="url(#roundedSquare)"/>
+
+  <!-- Funnel shape — wide top, narrow stem -->
+  <path d="M 128,148 L 384,148 L 384,164 L 288,272 L 288,364 L 224,388 L 224,272 L 128,164 Z"
+        fill="none" stroke="url(#accent)" stroke-width="12" stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- Sieve mesh — 3 horizontal bars inside the funnel -->
+  <line x1="168" y1="192" x2="344" y2="192" stroke="#818cf8" stroke-width="6" stroke-linecap="round" opacity="0.5"/>
+  <line x1="196" y1="220" x2="316" y2="220" stroke="#818cf8" stroke-width="6" stroke-linecap="round" opacity="0.4"/>
+  <line x1="218" y1="248" x2="294" y2="248" stroke="#818cf8" stroke-width="6" stroke-linecap="round" opacity="0.3"/>
+
+  <!-- Single output dot — the one that matters -->
+  <circle cx="256" cy="420" r="10" fill="#818cf8" opacity="0.8"/>
+</svg>

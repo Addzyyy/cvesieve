@@ -1,6 +1,6 @@
-# cvesieve
-
-> Filter CVE scanner noise using real-world exploitability signals.
+<p align="center">
+  <img src="banner.svg" alt="CVEsieve" width="840"/>
+</p>
 
 Container image scanners flag every CVE matching a package version — regardless of whether it's exploitable in context. Research shows only 2–7% of published CVEs are ever exploited in the wild, yet scanners give them all equal weight. The result is alert fatigue, blocked pipelines, and engineers who stop trusting scanner output entirely.
 
