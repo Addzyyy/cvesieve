@@ -21,6 +21,7 @@ from cvesieve.enrichment.epss import load_epss, lookup_epss
 from cvesieve.enrichment.kev import is_in_kev, load_kev
 from cvesieve.enrichment.nvd import fetch_missing_data
 from cvesieve.models import ClassifiedFinding, EnrichedFinding, Tier
+from cvesieve.allowlist import apply_allowlist, load_allowlist
 from cvesieve.output import format_json, format_summary, format_table
 from cvesieve.parser import parse_sarif
 
@@ -157,6 +158,8 @@ def _days_since(date_str: str | None) -> int | None:
 @click.option("--min-nvd-severity", type=click.Choice(["low", "medium", "high", "critical"], case_sensitive=False), default="low", show_default=True, help="Skip NVD lookups for CVEs below this severity (faster but fail-open for skipped CVEs)")
 @click.option("--exposure", type=click.Choice(["public", "internal"], case_sensitive=False), default=None, help="Deployment exposure: 'internal' caps non-KEV network BLOCKs at WARN")
 @click.option("--privilege", type=click.Choice(["root", "rootless"], case_sensitive=False), default=None, help="Container privilege: 'rootless' caps non-KEV Scope:Changed BLOCKs at WARN")
+@click.option("--allowlist", "allowlist_path", type=click.Path(exists=True, path_type=Path), default=None, help="Path to TOML allowlist file for risk acceptance")
+@click.option("--strict", is_flag=True, default=False, help="Ignore allowlist even if file is provided")
 @click.version_option(version=__version__, prog_name="cvesieve")
 def main(
     input_file: Path | None,
@@ -176,6 +179,8 @@ def main(
     min_nvd_severity: str,
     exposure: str | None,
     privilege: str | None,
+    allowlist_path: Path | None,
+    strict: bool,
 ) -> None:
     """Filter CVE scanner noise using real-world exploitability signals.
 
@@ -275,6 +280,12 @@ def main(
     if privilege:
         classified = _apply_privilege_cap(classified, privilege)
 
+    # 5e. Apply allowlist (KEV always wins, only downgrades)
+    if allowlist_path and not strict:
+        allowlist_entries = load_allowlist(allowlist_path)
+        if allowlist_entries:
+            classified = apply_allowlist(classified, allowlist_entries)
+
     # 5c. Apply severity filter (BLOCK findings always pass through regardless)
     if min_severity.lower() != "low":
         before = len(classified)
@@ -284,10 +295,11 @@ def main(
             click.echo(f"Filtered {filtered} finding(s) below {min_severity.upper()} severity.", err=True)
 
     # 6. Format output
+    allowlist_file_str = str(allowlist_path) if allowlist_path and not strict else None
     if output_format == "table":
         result = format_table(classified, scanner=scanner, tier_filter=tier)
     elif output_format == "json":
-        result = format_json(classified, scanner=scanner, epss_threshold=effective_network_threshold, local_epss_threshold=effective_local_threshold, age_threshold=age_threshold, age_gate_floor=age_gate_floor, exposure=exposure, privilege=privilege)
+        result = format_json(classified, scanner=scanner, epss_threshold=effective_network_threshold, local_epss_threshold=effective_local_threshold, age_threshold=age_threshold, age_gate_floor=age_gate_floor, exposure=exposure, privilege=privilege, allowlist_file=allowlist_file_str)
     else:
         result = format_summary(classified, scanner=scanner)
 

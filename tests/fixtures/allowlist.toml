@@ -1,0 +1,12 @@
+[[entry]]
+cve_id = "CVE-2024-5678"
+max_tier = "SUPPRESS"
+reason = "sudo not installed in runtime image"
+approved_by = "jane.doe@example.com"
+expires = "2099-12-31"
+
+[[entry]]
+cve_id = "CVE-2024-1234"
+max_tier = "SUPPRESS"
+reason = "accepted risk on this CVE"
+approved_by = "john.doe@example.com"

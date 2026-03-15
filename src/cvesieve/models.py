@@ -39,3 +39,4 @@ class ClassifiedFinding:
     enriched: EnrichedFinding
     tier: Tier
     reason: str
+    allowlist_note: str | None = None

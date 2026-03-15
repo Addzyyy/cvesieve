@@ -124,6 +124,7 @@ def _finding_to_dict(cf: ClassifiedFinding) -> dict:
         "days_since_published": ef.days_since_published,
         "tier": cf.tier.value,
         "reason": cf.reason,
+        "allowlist_note": cf.allowlist_note,
     }
 
 
@@ -136,6 +137,7 @@ def format_json(
     age_gate_floor: float | None = None,
     exposure: str | None = None,
     privilege: str | None = None,
+    allowlist_file: str | None = None,
 ) -> str:
     by_tier: dict[Tier, list] = {Tier.BLOCK: [], Tier.WARN: [], Tier.SUPPRESS: []}
     for f in findings:
@@ -162,6 +164,7 @@ def format_json(
                 "exposure": exposure,
                 "privilege": privilege,
             },
+            "allowlist_file": allowlist_file,
         },
         "summary": {
             "total": total,
@@ -169,6 +172,7 @@ def format_json(
             "warn": n_warn,
             "suppress": n_suppress,
             "noise_reduction_pct": round(_noise_reduction(total, n_block, n_warn), 1),
+            "allowlisted": sum(1 for f in findings if f.allowlist_note),
         },
         "block": by_tier[Tier.BLOCK],
         "warn": by_tier[Tier.WARN],
@@ -186,7 +190,9 @@ def format_summary(findings: list[ClassifiedFinding], scanner: str = "unknown") 
     noise_pct = _noise_reduction(total, n_block, n_warn)
 
     kev_part = f" | {n_kev} KEV hit{'s' if n_kev != 1 else ''}" if n_kev else ""
+    n_allowlisted = sum(1 for f in findings if f.allowlist_note)
+    allowlist_part = f" | {n_allowlisted} allowlisted" if n_allowlisted else ""
     return (
         f"cvesieve: {total} total \u2192 {n_block} block, {n_warn} warn, "
-        f"{n_suppress} suppress ({noise_pct:.1f}% noise reduction){kev_part}"
+        f"{n_suppress} suppress ({noise_pct:.1f}% noise reduction){kev_part}{allowlist_part}"
     )

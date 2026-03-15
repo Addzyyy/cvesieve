@@ -467,3 +467,57 @@ class TestContextCli:
         data = _parse_json_output(result.output)
         block_ids = {f["cve_id"] for f in data["block"]}
         assert "CVE-2024-1234" in block_ids  # KEV hit — always BLOCK
+
+
+class TestAllowlistCli:
+    def _run_cli(self, sarif_file: str, tmp_path: Path, extra_args: list = None):
+        runner = CliRunner()
+        with patch("cvesieve.cli.load_epss", side_effect=_fake_load_epss):
+            with patch("cvesieve.cli.load_kev", side_effect=_fake_load_kev):
+                with patch("cvesieve.cli.fetch_missing_data", side_effect=_fake_fetch_missing_data):
+                    result = runner.invoke(
+                        main,
+                        [str(FIXTURES / sarif_file), f"--cache-dir={tmp_path}", "--no-cache"] + (extra_args or []),
+                        catch_exceptions=False,
+                    )
+        return result
+
+    def test_allowlist_flag_works_end_to_end(self, tmp_path):
+        """--allowlist flag applies allowlist entries to findings."""
+        allowlist = str(FIXTURES / "allowlist.toml")
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "json", "--allowlist", allowlist])
+        data = _parse_json_output(result.output)
+        # CVE-2024-5678 should be allowlisted (suppressed)
+        suppress_ids = {f["cve_id"] for f in data["suppress"]}
+        assert "CVE-2024-5678" in suppress_ids
+
+    def test_strict_ignores_allowlist(self, tmp_path):
+        """--strict skips allowlist even if file is provided."""
+        allowlist = str(FIXTURES / "allowlist.toml")
+        # With strict
+        result_strict = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "json", "--allowlist", allowlist, "--strict"])
+        data_strict = _parse_json_output(result_strict.output)
+        # Strict should have no allowlist effect — no allowlist_file in metadata
+        assert data_strict["metadata"].get("allowlist_file") is None
+
+    def test_exit_code_0_when_all_blocks_allowlisted(self, tmp_path):
+        """Exit code should be 0 when all BLOCK findings are downgraded by allowlist."""
+        # Use trivy fixture — CVE-2024-2222 is network, high EPSS → BLOCK (not KEV)
+        allowlist_file = tmp_path / "al.toml"
+        allowlist_file.write_text(
+            '[[entry]]\ncve_id = "CVE-2024-2222"\nmax_tier = "WARN"\n'
+            'reason = "accepted"\napproved_by = "test@test.com"\n'
+        )
+        result = self._run_cli("trivy.sarif.json", tmp_path, ["--format", "json", "--allowlist", str(allowlist_file)])
+        assert result.exit_code == 0
+
+    def test_kev_stays_block_with_allowlist(self, tmp_path):
+        """KEV CVEs must stay BLOCK even with allowlist entry."""
+        allowlist = str(FIXTURES / "allowlist.toml")
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "json", "--allowlist", allowlist])
+        data = _parse_json_output(result.output)
+        block_ids = {f["cve_id"] for f in data["block"]}
+        assert "CVE-2024-1234" in block_ids  # KEV — always BLOCK
+        # KEV entry should have allowlist_note about KEV override
+        kev_finding = [f for f in data["block"] if f["cve_id"] == "CVE-2024-1234"][0]
+        assert kev_finding["allowlist_note"] == "[allowlisted but KEV overrides]"
