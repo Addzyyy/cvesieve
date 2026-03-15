@@ -467,3 +467,34 @@ class TestContextCli:
         data = _parse_json_output(result.output)
         block_ids = {f["cve_id"] for f in data["block"]}
         assert "CVE-2024-1234" in block_ids  # KEV hit — always BLOCK
+
+
+class TestNewOutputFormatsCli:
+    def _run_cli(self, sarif_file: str, tmp_path: Path, extra_args: list = None):
+        runner = CliRunner()
+        with patch("cvesieve.cli.load_epss", side_effect=_fake_load_epss):
+            with patch("cvesieve.cli.load_kev", side_effect=_fake_load_kev):
+                with patch("cvesieve.cli.fetch_missing_data", side_effect=_fake_fetch_missing_data):
+                    result = runner.invoke(
+                        main,
+                        [str(FIXTURES / sarif_file), f"--cache-dir={tmp_path}", "--no-cache"] + (extra_args or []),
+                        catch_exceptions=False,
+                    )
+        return result
+
+    def test_csv_format(self, tmp_path):
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "csv"])
+        assert "cve_id" in result.output
+        assert "CVE-2024-1234" in result.output
+
+    def test_markdown_format(self, tmp_path):
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "markdown"])
+        assert "BLOCK" in result.output
+        assert "|" in result.output
+
+    def test_sarif_format(self, tmp_path):
+        import json as json_mod
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "sarif"])
+        data = json_mod.loads(result.output)
+        assert data["version"] == "2.1.0"
+        assert len(data["runs"][0]["results"]) == 3
