@@ -22,7 +22,7 @@ from cvesieve.enrichment.kev import is_in_kev, load_kev
 from cvesieve.enrichment.nvd import fetch_missing_data
 from cvesieve.models import ClassifiedFinding, EnrichedFinding, Tier
 from cvesieve.allowlist import apply_allowlist, load_allowlist
-from cvesieve.output import format_json, format_summary, format_table
+from cvesieve.output import format_csv, format_json, format_markdown, format_sarif, format_summary, format_table
 from cvesieve.parser import parse_sarif
 
 DEFAULT_CACHE_DIR = Path.home() / ".cvesieve" / "cache"
@@ -142,7 +142,7 @@ def _days_since(date_str: str | None) -> int | None:
 
 @click.command()
 @click.argument("input_file", required=False, type=click.Path(exists=True, path_type=Path))
-@click.option("-f", "--format", "output_format", type=click.Choice(["table", "json", "summary"]), default="table", show_default=True)
+@click.option("-f", "--format", "output_format", type=click.Choice(["table", "json", "summary", "csv", "markdown", "sarif"]), default="table", show_default=True)
 @click.option("-o", "--output", "output_file", type=click.Path(path_type=Path), default=None)
 @click.option("--epss-threshold", type=float, default=None, help="Set EPSS threshold for ALL vectors (overridden by --network-epss-threshold / --local-epss-threshold)")
 @click.option("--network-epss-threshold", type=float, default=None, help="EPSS threshold for NETWORK/ADJACENT vectors (default: 0.001). Overrides --epss-threshold for network.")
@@ -300,6 +300,12 @@ def main(
         result = format_table(classified, scanner=scanner, tier_filter=tier)
     elif output_format == "json":
         result = format_json(classified, scanner=scanner, epss_threshold=effective_network_threshold, local_epss_threshold=effective_local_threshold, age_threshold=age_threshold, age_gate_floor=age_gate_floor, exposure=exposure, privilege=privilege, allowlist_file=allowlist_file_str)
+    elif output_format == "csv":
+        result = format_csv(classified)
+    elif output_format == "markdown":
+        result = format_markdown(classified, scanner=scanner, tier_filter=tier)
+    elif output_format == "sarif":
+        result = format_sarif(classified, scanner=scanner)
     else:
         result = format_summary(classified, scanner=scanner)
 

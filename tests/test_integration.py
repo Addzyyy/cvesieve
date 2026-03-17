@@ -521,3 +521,34 @@ class TestAllowlistCli:
         # KEV entry should have allowlist_note about KEV override
         kev_finding = [f for f in data["block"] if f["cve_id"] == "CVE-2024-1234"][0]
         assert kev_finding["allowlist_note"] == "[allowlisted but KEV overrides]"
+
+
+class TestNewOutputFormatsCli:
+    def _run_cli(self, sarif_file: str, tmp_path: Path, extra_args: list = None):
+        runner = CliRunner()
+        with patch("cvesieve.cli.load_epss", side_effect=_fake_load_epss):
+            with patch("cvesieve.cli.load_kev", side_effect=_fake_load_kev):
+                with patch("cvesieve.cli.fetch_missing_data", side_effect=_fake_fetch_missing_data):
+                    result = runner.invoke(
+                        main,
+                        [str(FIXTURES / sarif_file), f"--cache-dir={tmp_path}", "--no-cache"] + (extra_args or []),
+                        catch_exceptions=False,
+                    )
+        return result
+
+    def test_csv_format(self, tmp_path):
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "csv"])
+        assert "cve_id" in result.output
+        assert "CVE-2024-1234" in result.output
+
+    def test_markdown_format(self, tmp_path):
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "markdown"])
+        assert "BLOCK" in result.output
+        assert "|" in result.output
+
+    def test_sarif_format(self, tmp_path):
+        import json as json_mod
+        result = self._run_cli("docker_scout.sarif.json", tmp_path, ["--format", "sarif"])
+        data = json_mod.loads(result.output)
+        assert data["version"] == "2.1.0"
+        assert len(data["runs"][0]["results"]) == 3

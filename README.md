@@ -166,6 +166,77 @@ Regardless of thresholds, **KEV always wins** — any CVE with confirmed active 
 
 ---
 
+## Benchmark: real-world noise reduction
+
+We scanned 30 popular Docker images (both pinned older versions and latest tags) with Trivy and ran the results through cvesieve using **deliberately conservative settings**:
+
+```bash
+cvesieve \
+  --epss-threshold 0.01 \
+  --min-severity high \
+  --min-block-severity high \
+  --min-nvd-severity critical \
+  --age-threshold 14 \
+  --age-gate-floor 0.001 \
+  scan.sarif.json
+```
+
+These settings are conservative because:
+
+- **1% EPSS threshold** — blocks if there's even a 1-in-100 chance of exploitation in the next 30 days. Most organisations would be comfortable at 2-5%.
+- **14-day age gate** — any CVE less than 14 days old with EPSS above 0.1% is blocked regardless of the 1% threshold. New CVEs are held at BLOCK until EPSS stabilises.
+- **KEV always wins** — every CVE with confirmed active exploitation blocks, no matter what.
+- **No deployment context flags** — `--exposure` and `--privilege` are not used. These would reduce BLOCKs further for internal or rootless services.
+
+### Results
+
+| | Count |
+|--|-------|
+| Total CVEs across 30 images | **43,253** |
+| HIGH/CRITICAL CVEs | **8,781** |
+| CVEs that actually BLOCK | **633** |
+| Noise reduction (from raw) | **98.6%** |
+| Noise reduction (from HIGH+) | **92.8%** |
+
+### Per-image breakdown
+
+| Image | Raw CVEs | HIGH+ | BLOCK | WARN | Reduction (raw) | Reduction (HIGH+) |
+|-------|----------|-------|-------|------|-----------------|-------------------|
+| nginx:1.23 | 455 | 108 | 46 | 28 | 89.9% | 57.5% |
+| nginx:1.25 | 362 | 77 | 36 | 23 | 90.1% | 53.3% |
+| redis:7.0 | 229 | 58 | 18 | 35 | 92.2% | 69.0% |
+| postgres:14 | 164 | 13 | 0 | 6 | 100.0% | 100.0% |
+| postgres:15 | 164 | 13 | 0 | 6 | 100.0% | 100.0% |
+| node:18 | 4,041 | 1,073 | 40 | 437 | 99.1% | 96.3% |
+| node:20 | 2,127 | 285 | 16 | 136 | 99.3% | 94.4% |
+| python:3.10 | 1,554 | 158 | 9 | 45 | 99.5% | 94.4% |
+| python:3.11 | 1,553 | 158 | 9 | 45 | 99.5% | 94.4% |
+| httpd:2.4.57 | 4,762 | 1,151 | 66 | 1,052 | 98.7% | 94.3% |
+| mysql:8.0 | 25 | 7 | 1 | 6 | 96.0% | 85.8% |
+| mongo:6.0 | 296 | 62 | 0 | 8 | 100.0% | 100.0% |
+| rabbitmq:3.11 | 147 | 1 | 0 | 1 | 100.0% | 100.0% |
+| mariadb:10.11 | 54 | 5 | 0 | 5 | 100.0% | 100.0% |
+| golang:1.20 | 6,037 | 1,328 | 67 | 1,002 | 98.9% | 95.0% |
+| golang:1.21 | 4,768 | 1,000 | 43 | 768 | 99.1% | 95.7% |
+| ruby:3.1 | 4,383 | 1,155 | 43 | 497 | 99.1% | 96.3% |
+| php:8.1 | 1,433 | 98 | 6 | 83 | 99.6% | 93.9% |
+| ubuntu:22.04 | 26 | 0 | 0 | 0 | 100.0% | 100.0% |
+| debian:bullseye | 126 | 7 | 4 | 2 | 96.9% | 42.9% |
+| wordpress:6.3 | 5,615 | 1,321 | 128 | 919 | 97.8% | 90.4% |
+| grafana:9.5.0 | 336 | 109 | 31 | 18 | 90.8% | 71.6% |
+| grafana:10.0.0 | 291 | 80 | 25 | 13 | 91.5% | 68.8% |
+| prometheus:v2.45.0 | 145 | 41 | 11 | 7 | 92.5% | 73.2% |
+| traefik:v2.10 | 100 | 23 | 9 | 10 | 91.0% | 60.9% |
+| nginx:latest | 155 | 4 | 0 | 2 | 100.0% | 100.0% |
+| redis:latest | 74 | 0 | 0 | 0 | 100.0% | 100.0% |
+| postgres:latest | 164 | 13 | 0 | 6 | 100.0% | 100.0% |
+| python:latest | 1,549 | 155 | 9 | 43 | 99.5% | 94.2% |
+| node:latest | 2,118 | 278 | 16 | 129 | 99.3% | 94.3% |
+
+**Key takeaway:** Even with conservative settings, no deployment context flags, and a strict 1% EPSS threshold — cvesieve reduces scanner noise by 98.6% overall and 92.8% among HIGH/CRITICAL CVEs. The 633 CVEs that do BLOCK are genuinely dangerous: KEV-listed, high EPSS, or network-exploitable with insufficient data to downgrade safely.
+
+---
+
 ## Safety guarantees
 
 - **KEV always wins.** Any CVE with confirmed active exploitation is BLOCK, no exceptions.
